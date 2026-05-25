@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/EmptyState";
+import { Markdown } from "@/components/Markdown";
 import { ModalityBadge } from "@/components/ModalityBadge";
 import { PreviewThumb } from "@/components/PreviewThumb";
 import {
@@ -19,6 +20,7 @@ import {
 } from "@/components/PreviewDialog";
 import { useChat, type ChatMessage } from "@/hooks/useChat";
 import type { SearchResult } from "@/lib/api";
+import { formatSourceLocation } from "@/lib/utils";
 
 function Bubble({
   message,
@@ -43,12 +45,18 @@ function Bubble({
         }`}
       >
         {message.content ? (
-          <p className="whitespace-pre-wrap leading-relaxed">
-            {message.content}
-            {message.role === "assistant" && message.streaming && (
-              <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-foreground/50 align-middle" />
-            )}
-          </p>
+          isUser ? (
+            <p className="whitespace-pre-wrap leading-relaxed">
+              {message.content}
+            </p>
+          ) : (
+            <>
+              <Markdown>{message.content}</Markdown>
+              {message.streaming && (
+                <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse bg-foreground/50 align-middle" />
+              )}
+            </>
+          )
         ) : message.role === "assistant" && message.streaming ? (
           <span className="inline-flex items-center gap-1.5 text-muted-foreground">
             <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.3s]" />
@@ -73,36 +81,47 @@ function Bubble({
                 )
               </div>
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {message.sources.map((src) => (
-                  <button
-                    key={src.node_id}
-                    type="button"
-                    onClick={() => onSourceClick(src)}
-                    className="flex items-center gap-2 rounded-md border bg-background p-2 text-left transition-colors hover:bg-accent"
-                  >
-                    <div className="h-10 w-10 shrink-0 overflow-hidden rounded bg-muted">
-                      <PreviewThumb
-                        url={src.preview_url}
-                        modality={src.modality}
-                        alt={src.display_name}
-                      />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-xs font-medium">
-                        {src.display_name}
-                      </div>
-                      <div className="mt-0.5 flex items-center gap-1.5">
-                        <ModalityBadge
+                {message.sources.map((src) => {
+                  const location = formatSourceLocation(
+                    src.modality,
+                    src.metadata,
+                  );
+                  return (
+                    <button
+                      key={src.node_id}
+                      type="button"
+                      onClick={() => onSourceClick(src)}
+                      className="flex items-center gap-2 rounded-md border bg-background p-2 text-left transition-colors hover:bg-accent"
+                    >
+                      <div className="h-10 w-10 shrink-0 overflow-hidden rounded bg-muted">
+                        <PreviewThumb
+                          url={src.preview_url}
                           modality={src.modality}
-                          showLabel={false}
+                          alt={src.display_name}
                         />
-                        <span className="text-[10px] tabular-nums text-muted-foreground">
-                          {(src.score * 100).toFixed(0)}%
-                        </span>
                       </div>
-                    </div>
-                  </button>
-                ))}
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-xs font-medium">
+                          {src.display_name}
+                        </div>
+                        {location && (
+                          <div className="mt-0.5 truncate text-[11px] font-medium text-foreground/80">
+                            {location}
+                          </div>
+                        )}
+                        <div className="mt-0.5 flex items-center gap-1.5">
+                          <ModalityBadge
+                            modality={src.modality}
+                            showLabel={false}
+                          />
+                          <span className="text-[10px] tabular-nums text-muted-foreground">
+                            {(src.score * 100).toFixed(0)}%
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}

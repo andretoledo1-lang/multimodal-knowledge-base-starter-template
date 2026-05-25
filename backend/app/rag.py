@@ -39,8 +39,8 @@ class GroundedAnswer:
 
 def _pdf_page_for_result(r: SearchResult) -> int:
     """Return 0-based page index to render for a PDF result."""
-    page_start = r.metadata.get("page_start")
-    return max(0, int(page_start) - 1) if page_start else 0
+    page = r.metadata.get("page") or r.metadata.get("page_start")
+    return max(0, int(page) - 1) if page else 0
 
 
 def _image_to_bytes(img: Image.Image, fmt: str = "JPEG", quality: int = 85) -> bytes:
@@ -72,7 +72,11 @@ def build_multimodal_context(
         modality = r.modality
         loc = ""
         if modality == "pdf" and meta.get("page_start"):
-            loc = f" (pages {meta['page_start']}-{meta.get('page_end', meta['page_start'])})"
+            start = int(meta["page_start"])
+            end = int(meta.get("page_end") or start)
+            total = meta.get("total_pages")
+            label = f"page {start}" if start == end else f"pages {start}-{end}"
+            loc = f" ({label} of {total})" if total else f" ({label})"
         elif modality == "video" and meta.get("timestamp_seconds") is not None:
             loc = f" (@ {meta['timestamp_seconds']}s)"
 
@@ -141,6 +145,7 @@ You will be shown a question and a set of retrieved sources. Some sources are im
 Rules:
 - Answer using only the retrieved sources. If the answer isn't there, say so.
 - Cite sources inline as [1], [2], etc. matching the numbered list provided.
+- For PDF sources, include the page number in your prose (e.g. "on page 4 [1]") so the reader can verify.
 - When the answer involves something visible in an image/PDF/video, describe what you see.
 - Be concise but specific. Prefer 2-5 short paragraphs over a single wall of text."""
 

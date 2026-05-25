@@ -52,7 +52,7 @@ from pypdf import PdfReader, PdfWriter
 
 EMBED_MODEL = "gemini-embedding-2-preview"
 EMBED_DIM = 768
-MAX_PDF_PAGES_PER_EMBED = 6      # Gemini Embedding 2 PDF limit
+PDF_PAGES_PER_EMBED = 1          # One vector per page — exact-page citations
 MAX_VIDEO_SECONDS_DIRECT = 120   # Above this, sample frames instead
 DEFAULT_VIDEO_FRAME_INTERVAL_S = 5
 
@@ -278,48 +278,32 @@ class KnowledgeBase:
         base_meta["total_pages"] = total_pages
         on_progress(PipelineEvent("inspect", f"PDF has {total_pages} page(s)"))
 
-        # Short PDF: embed the whole file in one call (preserves text+visual layout)
-        if total_pages <= MAX_PDF_PAGES_PER_EMBED:
-            on_progress(PipelineEvent("embed", "Embedding full PDF…"))
-            data = path.read_bytes()
-            vec = self._embed_bytes(data, "application/pdf")
-            node_id = f"pdf_{base_meta['id']}"
-            node = TextNode(
-                id_=node_id,
-                text=f"[PDF] {base_meta['original_name']} ({total_pages} pages)",
-                metadata={
-                    **base_meta,
-                    "modality": "pdf",
-                    "page_start": 1,
-                    "page_end": total_pages,
-                },
-                embedding=vec,
-            )
-            self.vector_store.add([node])
-            on_progress(PipelineEvent("done", f"Indexed PDF: {base_meta['original_name']}", 1.0))
-            return [node_id]
-
-        # Long PDF: split into ≤6-page chunks
-        on_progress(PipelineEvent("split", f"Splitting into {(total_pages + MAX_PDF_PAGES_PER_EMBED - 1) // MAX_PDF_PAGES_PER_EMBED} chunk(s)…"))
-        chunk_paths = _split_pdf(path, MAX_PDF_PAGES_PER_EMBED)
+        # One vector per page so retrieval pinpoints the exact page (not a 6-page batch).
+        on_progress(PipelineEvent(
+            "split",
+            f"Embedding {total_pages} page(s) individually for exact-page citations…",
+        ))
+        page_paths = _split_pdf(path, PDF_PAGES_PER_EMBED)
         ids: list[str] = []
         try:
-            for i, (chunk_path, start_p, end_p) in enumerate(chunk_paths, 1):
+            for i, (page_path, start_p, end_p) in enumerate(page_paths, 1):
+                page = start_p  # start_p == end_p when PDF_PAGES_PER_EMBED == 1
                 on_progress(PipelineEvent(
                     "embed",
-                    f"Embedding pages {start_p}-{end_p}…",
-                    progress=i / len(chunk_paths),
+                    f"Embedding page {page}/{total_pages}…",
+                    progress=i / total_pages,
                 ))
-                data = chunk_path.read_bytes()
+                data = page_path.read_bytes()
                 vec = self._embed_bytes(data, "application/pdf")
-                node_id = f"pdf_{base_meta['id']}_p{start_p}-{end_p}"
+                node_id = f"pdf_{base_meta['id']}_p{page}"
                 node = TextNode(
                     id_=node_id,
-                    text=f"[PDF] {base_meta['original_name']} pages {start_p}-{end_p}",
+                    text=f"[PDF] {base_meta['original_name']} page {page}",
                     metadata={
                         **base_meta,
                         "modality": "pdf",
-                        "page_start": start_p,
+                        "page": page,
+                        "page_start": page,
                         "page_end": end_p,
                     },
                     embedding=vec,
@@ -327,10 +311,14 @@ class KnowledgeBase:
                 self.vector_store.add([node])
                 ids.append(node_id)
         finally:
-            for p, _, _ in chunk_paths:
+            for p, _, _ in page_paths:
                 p.unlink(missing_ok=True)
 
-        on_progress(PipelineEvent("done", f"Indexed PDF: {base_meta['original_name']} ({len(ids)} chunks)", 1.0))
+        on_progress(PipelineEvent(
+            "done",
+            f"Indexed PDF: {base_meta['original_name']} ({len(ids)} page vector(s))",
+            1.0,
+        ))
         return ids
 
     def _ingest_video(

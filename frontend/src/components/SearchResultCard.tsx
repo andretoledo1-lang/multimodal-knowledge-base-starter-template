@@ -2,6 +2,7 @@ import { Card } from "@/components/ui/card";
 import { ModalityBadge } from "@/components/ModalityBadge";
 import { PreviewThumb } from "@/components/PreviewThumb";
 import type { SearchResult } from "@/lib/api";
+import { formatSourceLocation } from "@/lib/utils";
 
 interface SearchResultCardProps {
   result: SearchResult;
@@ -9,6 +10,7 @@ interface SearchResultCardProps {
 }
 
 export function SearchResultCard({ result, onClick }: SearchResultCardProps) {
+  const location = formatSourceLocation(result.modality, result.metadata);
   return (
     <Card className="overflow-hidden transition-shadow hover:shadow-md">
       <button
@@ -34,6 +36,11 @@ export function SearchResultCard({ result, onClick }: SearchResultCardProps) {
           </div>
           <div className="mt-1 flex items-center gap-2">
             <ModalityBadge modality={result.modality} />
+            {location && (
+              <span className="text-[11px] font-medium text-foreground/80">
+                {location}
+              </span>
+            )}
           </div>
           {result.snippet && (
             <p className="mt-1.5 line-clamp-2 text-xs text-muted-foreground">

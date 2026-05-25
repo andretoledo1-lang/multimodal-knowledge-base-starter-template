@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/dialog";
 import { ModalityBadge } from "@/components/ModalityBadge";
 import { PreviewThumb } from "@/components/PreviewThumb";
+import { formatSourceLocation } from "@/lib/utils";
 
 export interface PreviewDialogItem {
   display_name: string;
@@ -32,6 +33,13 @@ export function PreviewDialog({
   const [showMeta, setShowMeta] = useState(false);
   if (!item) return null;
   const meta = item.metadata ?? {};
+  const location = formatSourceLocation(item.modality, meta);
+  const descriptionParts = [
+    location,
+    typeof item.score === "number"
+      ? `Relevance score: ${(item.score * 100).toFixed(1)}%`
+      : null,
+  ].filter(Boolean);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
@@ -42,9 +50,9 @@ export function PreviewDialog({
               {item.display_name}
             </DialogTitle>
           </div>
-          {typeof item.score === "number" && (
+          {descriptionParts.length > 0 && (
             <DialogDescription>
-              Relevance score: {(item.score * 100).toFixed(1)}%
+              {descriptionParts.join(" · ")}
             </DialogDescription>
           )}
         </DialogHeader>
