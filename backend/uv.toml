@@ -1,0 +1,12 @@
+# Supply-chain hardening: refuse to install any package version published
+# after this date. Bumping it forward periodically (≈weekly) gives the
+# community and security researchers time to detect, report, and "yank"
+# malicious packages from PyPI before they reach your environment.
+#
+# `uv` requires an absolute YYYY-MM-DD date or RFC 3339 timestamp here
+# (relative strings like "7 days" are not accepted in the config file).
+#
+# For urgent security updates, override per-invocation, e.g.:
+#   UV_EXCLUDE_NEWER=2026-05-25 uv sync
+#   uv sync --exclude-newer 2026-05-25
+exclude-newer = "2026-05-25T00:00:00Z"
