@@ -1,22 +1,34 @@
-# Multimodal Knowledge Base
+# Multimodal Knowledge Base — starter template
 
-A single-page React app on top of FastAPI that ingests **images, PDFs, videos,
-and text** into one shared embedding space (Gemini Embedding 2) and lets you
-search them cross-modally, then chat with grounded, vision-aware answers
-(Gemini 2.5 Flash).
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Made By Agents](https://img.shields.io/badge/Made%20By%20Agents-madebyagents.com-000?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEwIi8+PC9zdmc+)](https://www.madebyagents.com)
 
-- **Cross-modal search** — a text query directly hits the most relevant image,
-  PDF page, or video frame, with no glue code.
+Open-source starter for a cross-modal RAG app: ingest **images, PDFs, videos,
+and text** into one shared embedding space (Gemini Embedding 2) and search
+them with a single text query, then chat with grounded, vision-aware answers
+(Gemini 3.5 Flash).
+
+Clone it, drop in a Gemini API key, and you have a working multimodal RAG
+app on day one. Fork it as the foundation for a domain-specific knowledge
+tool, an internal search product, or a research playground.
+
+## Features
+
+- **Cross-modal search** — a text query directly hits the most relevant
+  image, PDF page, or video frame. No separate image index, no glue code.
 - **Streaming RAG chat** — token-by-token SSE, then a sources card with
   thumbnail previews you can open full-screen.
-- **Library** — drag-and-drop ingest, modality badges, optimistic delete.
+- **Drag-and-drop ingest** — drop files anywhere in the library; modality is
+  detected automatically.
 - **Single port in prod** — Vite builds the SPA into FastAPI's `static/`; one
-  process and one container serve everything.
+  process and one container serve API + UI.
+- **Docker-ready** — multi-stage build, persistent volumes for the vector
+  store and uploads.
 
 ## Stack
 
 - **Backend:** FastAPI · ChromaDB (persistent) · `google-genai`
-  (gemini-embedding-2-preview + gemini-2.5-flash) · LlamaIndex for text
+  (gemini-embedding-2-preview + gemini-3.5-flash) · LlamaIndex for text
   chunking · PyMuPDF / OpenCV for PDF and video preprocessing.
 - **Frontend:** React 19 + Vite 8 · TypeScript · Tailwind v4 ·
   shadcn-style primitives (authored locally) · TanStack Query · Sonner ·
@@ -29,6 +41,9 @@ search them cross-modally, then chat with grounded, vision-aware answers
 You need a Gemini API key from <https://aistudio.google.com/app/apikey>.
 
 ```bash
+git clone <your-fork-url> multimodal-kb
+cd multimodal-kb
+
 # 1) Backend
 cd backend
 cp .env.example .env       # paste your GEMINI_API_KEY into .env
@@ -43,8 +58,8 @@ npm run dev
 
 Open <http://localhost:5173>. Vite proxies `/api/*` to `:8000`.
 
-Click **Load demo data** in the sidebar to populate the KB with a small set of
-mixed-modality samples.
+Drag files into the **Library** panel (or click **Upload files**) to ingest
+them, then ask questions in the **Chat** tab.
 
 ## Quickstart — production build (single port)
 
@@ -94,8 +109,9 @@ The backend reads `backend/.env` via `python-dotenv`. Real `.env` is gitignored;
 - All modalities share **one Gemini Embedding 2 vector space** (768-dim), so a
   text query directly retrieves the most relevant image or PDF page without any
   separate image index.
-- **PDFs >6 pages** are split into 6-page chunks; each chunk is embedded as a
-  composite image. Metadata carries `page_start`, `page_end`, `total_pages`.
+- **PDFs** are embedded **one vector per page** so retrieval pinpoints the
+  exact page (no 6-page batching). Metadata carries `page`, `page_start`,
+  `page_end`, and `total_pages`.
 - **Videos ≤120s** are embedded as a single whole-video vector; longer videos
   are frame-sampled (default every 5s) with `timestamp_seconds` in metadata.
 - **Text** files are chunked by LlamaIndex's standard text splitter.
@@ -131,9 +147,8 @@ backend/
     main.py            # FastAPI app, lifespan, static mount
     deps.py            # Settings + KB singleton (lru_cache)
     schemas.py         # Pydantic v2 DTOs
-    kb.py              # KnowledgeBase (verbatim from demo)
-    rag.py             # answer_with_vision (verbatim from demo)
-    sample_data.py     # demo seed (verbatim from demo)
+    kb.py              # KnowledgeBase: embedding, ingest, search
+    rag.py             # answer_with_vision: grounded chat
     routes/{ingest,search,chat,library,preview}.py
   static/              # Vite build output (gitignored)
   chroma_db/, uploads/ # data (gitignored)
@@ -142,13 +157,36 @@ frontend/
     main.tsx, App.tsx, index.css
     lib/{api,sse,queryClient,utils}.ts
     hooks/             # useStats, useItems, useSearch, useImageSearch,
-                       # useIngest, useDeleteItem, useSeed, useClear, useChat
+                       # useIngest, useDeleteItem, useClear, useChat
     components/        # Sidebar, SearchPanel, ChatPanel, LibraryPanel,
                        # PreviewDialog, ErrorBoundary, theme-provider, ui/*
 Dockerfile
 .dockerignore
-docs/TASKS.md          # canonical implementation spec
 ```
+
+---
+
+## Extending this template
+
+This is intentionally a small, readable base. A few common directions to take
+it:
+
+- **Swap the embedding provider** — `KnowledgeBase` in `backend/app/kb.py` is
+  the only place that calls `google-genai` for embeddings. Replace with OpenAI,
+  Cohere, Voyage, or a local model; keep the 768-dim Chroma collection or
+  re-create it at the new dimension.
+- **Swap the vector store** — Chroma is wrapped behind a thin interface in
+  `kb.py`. pgvector, Qdrant, Weaviate, or LanceDB are drop-in replacements.
+- **Swap the chat model** — `backend/app/rag.py::answer_with_vision` builds the
+  multimodal prompt. Point it at another vision-capable model (GPT-4o, Claude,
+  Llama 3.2 Vision) and keep the SSE contract intact.
+- **Add auth + multi-tenancy** — gate `/api/*` with an auth dependency in
+  `backend/app/main.py` and namespace the Chroma collection per user/org.
+- **Add a different ingest pipeline** — audio transcription, web scraping,
+  Notion/Drive sync. The `_ingest_one` helper in `routes/ingest.py` is the
+  integration point.
+- **Productionize** — add background ingest jobs, structured logging,
+  rate limits, and a real object store for `uploads/`.
 
 ---
 
@@ -162,7 +200,7 @@ docs/TASKS.md          # canonical implementation spec
 `:8000`; the Vite proxy only forwards `/api/*`.
 
 **Chat stalls with no tokens** — verify your Gemini key has access to
-`gemini-2.5-flash` and the embedding preview. Check the backend log for the
+`gemini-3.5-flash` and the embedding preview. Check the backend log for the
 `chat q=… tokens=…` line that's emitted at end of stream.
 
 **`opencv` errors inside Docker** — the image installs `libgl1` and
@@ -171,3 +209,14 @@ keep those packages.
 
 **Library/Search shows no previews** — the relevant ingested file may have
 been moved or deleted on disk; previews are served from `backend/uploads/`.
+
+---
+
+## Contributing
+
+PRs and issues are welcome. For larger changes, open an issue first to discuss
+the direction.
+
+## License
+
+[MIT](LICENSE) — do what you want, just keep the copyright notice.

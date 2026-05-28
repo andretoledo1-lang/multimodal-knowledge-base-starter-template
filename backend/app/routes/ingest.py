@@ -1,4 +1,4 @@
-"""POST /api/ingest, POST /api/seed, POST /api/clear."""
+"""POST /api/ingest, POST /api/clear."""
 from __future__ import annotations
 
 import logging
@@ -8,9 +8,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from starlette.concurrency import run_in_threadpool
 
-from ..deps import get_kb, get_settings
+from ..deps import get_kb
 from ..kb import KnowledgeBase
-from ..sample_data import generate_samples
 from ..schemas import (
     ClearResponse,
     IngestItemDTO,
@@ -72,21 +71,6 @@ async def ingest(
                 raise HTTPException(status_code=500, detail=f"Ingest failed for {upload.filename}: {e}") from e
             items.append(item)
     logger.info("Ingested %d file(s); total vectors now: %d", len(items), kb.count())
-    return IngestResponse(items=items, total=len(items))
-
-
-@router.post("/seed", response_model=IngestResponse)
-async def seed(kb: KnowledgeBase = Depends(get_kb)) -> IngestResponse:
-    settings = get_settings()
-    samples_dir = settings.kb_upload_dir.parent / "samples"
-    paths = await run_in_threadpool(generate_samples, samples_dir)
-    items: list[IngestItemDTO] = []
-    for p in paths:
-        item = await run_in_threadpool(
-            _ingest_one, kb, p, p.name, ["sample"], 5,
-        )
-        items.append(item)
-    logger.info("Seeded %d sample(s)", len(items))
     return IngestResponse(items=items, total=len(items))
 
 

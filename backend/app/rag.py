@@ -3,7 +3,7 @@ Multimodal vision RAG.
 
 After retrieving the top-k items from the KB, we attach the actual visual
 content (image bytes, rendered PDF page, sampled video frame) to the prompt
-so Gemini 2.5 Flash literally *sees* what was retrieved.
+so Gemini 3.5 Flash literally *sees* what was retrieved.
 
 This is what makes "the chart on page 4 of the PDF answers my text question"
 actually work.
@@ -27,7 +27,7 @@ from .kb import (
     render_pdf_page,
 )
 
-DEFAULT_VISION_MODEL = "gemini-2.5-flash"
+DEFAULT_VISION_MODEL = "gemini-3.5-flash"
 
 
 @dataclass
@@ -206,7 +206,7 @@ def answer_with_vision(
     )
     contents = [prompt, *visual_parts]
 
-    # 4. Stream from Gemini 2.5 Flash
+    # 4. Stream from Gemini 3.5 Flash
     on_progress(PipelineEvent("generate", f"Calling {model} with {visual_count} image part(s)…"))
     full = []
     stream = kb.genai_client.models.generate_content_stream(

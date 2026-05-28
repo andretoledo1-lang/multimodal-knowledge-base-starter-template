@@ -147,10 +147,6 @@ export const api = {
     );
   },
 
-  async seed(): Promise<IngestResponse> {
-    return jsonOrThrow(await fetch("/api/seed", { method: "POST" }));
-  },
-
   async clear(): Promise<{ cleared: boolean }> {
     return jsonOrThrow(await fetch("/api/clear", { method: "POST" }));
   },

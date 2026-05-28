@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { useDropzone } from "react-dropzone";
 import { FolderOpen, Trash2, Upload, Loader2 } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/EmptyState";
@@ -14,7 +13,6 @@ import {
 import { useItems } from "@/hooks/useItems";
 import { useDeleteItem } from "@/hooks/useDeleteItem";
 import { useIngest } from "@/hooks/useIngest";
-import { useSeed } from "@/hooks/useSeed";
 import { formatRelativeTime } from "@/lib/utils";
 import type { Item } from "@/lib/api";
 
@@ -92,7 +90,6 @@ export function LibraryPanel() {
   const items = useItems();
   const del = useDeleteItem();
   const ingest = useIngest();
-  const seed = useSeed();
   const [preview, setPreview] = useState<PreviewDialogItem | null>(null);
 
   const onDrop = (files: File[]) => {
@@ -143,21 +140,7 @@ export function LibraryPanel() {
         <EmptyState
           icon={FolderOpen}
           title="Your knowledge base is empty"
-          description="Upload files or load the demo dataset to get started."
-          action={
-            <div className="flex gap-2">
-              <Button
-                onClick={() => seed.mutate()}
-                disabled={seed.isPending}
-                variant="outline"
-              >
-                {seed.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : null}
-                Load demo data
-              </Button>
-            </div>
-          }
+          description="Drag and drop files anywhere on this panel, or use Upload files in the sidebar."
         />
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">

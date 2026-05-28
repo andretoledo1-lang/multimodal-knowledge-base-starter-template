@@ -1,19 +1,10 @@
 import { useRef } from "react";
-import {
-  Database,
-  Trash2,
-  Sparkles,
-  Upload,
-  Moon,
-  Sun,
-  Loader2,
-} from "lucide-react";
+import { Database, Trash2, Upload, Moon, Sun, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ModalityBadge } from "@/components/ModalityBadge";
 import { useStats } from "@/hooks/useStats";
-import { useSeed } from "@/hooks/useSeed";
 import { useClear } from "@/hooks/useClear";
 import { useIngest } from "@/hooks/useIngest";
 import { useTheme } from "@/components/theme-provider";
@@ -23,7 +14,6 @@ const MODALITIES: Modality[] = ["image", "pdf", "video", "text"];
 
 export function Sidebar() {
   const { data: stats, isLoading } = useStats();
-  const seed = useSeed();
   const clear = useClear();
   const ingest = useIngest();
   const { resolved, toggle } = useTheme();
@@ -124,20 +114,6 @@ export function Sidebar() {
           onChange={onFilesChosen}
           accept="image/*,.pdf,video/*,.txt,.md,.markdown,.json,.csv,.html,.htm"
         />
-
-        <Button
-          variant="outline"
-          onClick={() => seed.mutate()}
-          disabled={seed.isPending}
-          className="w-full justify-start"
-        >
-          {seed.isPending ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Sparkles className="h-4 w-4" />
-          )}
-          {seed.isPending ? "Loading…" : "Load demo data"}
-        </Button>
 
         <Button
           variant="ghost"
