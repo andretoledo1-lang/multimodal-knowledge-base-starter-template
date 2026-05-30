@@ -1,13 +1,21 @@
 # syntax=docker/dockerfile:1.7
 
 # --- Stage 1: build the frontend ---
-FROM node:20-slim AS frontend
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json* ./
-RUN npm ci
-COPY frontend/ ./
-# Vite outDir is ../backend/static, so create that mountpoint
-RUN mkdir -p /app/backend/static && npm run build
+# Node 22 to satisfy engines.node (>=22.11.0) enforced by engineStrict.
+FROM node:22-slim AS frontend
+ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable
+WORKDIR /app
+# Workspace manifests + lockfile first, for layer caching. pnpm reads the
+# pinned version from package.json "packageManager" and the hardening
+# settings from pnpm-workspace.yaml.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY frontend/package.json ./frontend/
+RUN pnpm install --frozen-lockfile
+# App source
+COPY frontend/ ./frontend/
+# Vite outDir is ../backend/static (relative to frontend/), so create it
+RUN mkdir -p /app/backend/static && pnpm --filter frontend build
 
 
 # --- Stage 2: backend runtime ---

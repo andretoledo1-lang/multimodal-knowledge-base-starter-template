@@ -1,0 +1,16 @@
+{
+  "name": "multimodal-kb",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Workspace root for the multimodal knowledge base starter (frontend is the only Node package; backend is Python via uv).",
+  "packageManager": "pnpm@11.5.0",
+  "engines": {
+    "node": ">=22.11.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter frontend dev",
+    "build": "pnpm --filter frontend build",
+    "preview": "pnpm --filter frontend preview",
+    "typecheck": "pnpm --filter frontend typecheck"
+  }
+}

@@ -1,4 +1,4 @@
-# Multimodal Knowledge Base — starter template
+# Multimodal Knowledge Base — Starter Template
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Made By Agents](https://img.shields.io/badge/Made%20By%20Agents-madebyagents.com-000?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0id2hpdGUiPjxjaXJjbGUgY3g9IjEyIiBjeT0iMTIiIHI9IjEwIi8+PC9zdmc+)](https://www.madebyagents.com)
@@ -36,24 +36,21 @@ tool, an internal search product, or a research playground.
 
 ---
 
-## Quickstart — local development (two processes)
+## Quickstart — local development
 
 You need a Gemini API key from <https://aistudio.google.com/app/apikey>.
+
+Prereqs: [`uv`](https://docs.astral.sh/uv/) (Python), [`pnpm`](https://pnpm.io/)
+(Node ≥ 22.11; `corepack enable` pins the right pnpm version), and `make`.
 
 ```bash
 git clone <your-fork-url> multimodal-kb
 cd multimodal-kb
 
-# 1) Backend
-cd backend
-cp .env.example .env       # paste your GEMINI_API_KEY into .env
-uv sync
-uv run uvicorn app.main:app --reload --port 8000
+cp backend/.env.example backend/.env   # paste your GEMINI_API_KEY into it
 
-# 2) Frontend (in a second terminal)
-cd frontend
-npm install
-npm run dev
+make install   # uv sync (backend) + pnpm install (frontend)
+make dev       # backend :8000 + frontend :5173 in one terminal; Ctrl-C stops both
 ```
 
 Open <http://localhost:5173>. Vite proxies `/api/*` to `:8000`.
@@ -61,11 +58,19 @@ Open <http://localhost:5173>. Vite proxies `/api/*` to `:8000`.
 Drag files into the **Library** panel (or click **Upload files**) to ingest
 them, then ask questions in the **Chat** tab.
 
+Prefer two terminals, or want to run just one side? The individual targets work:
+
+```bash
+make backend    # FastAPI only  (uv run uvicorn … --reload --port 8000)
+make frontend   # Vite only     (pnpm --filter frontend dev)
+```
+
+Run `make` (or `make help`) to list every target.
+
 ## Quickstart — production build (single port)
 
 ```bash
-cd frontend && npm install && npm run build   # → ../backend/static/
-cd ../backend && uv run uvicorn app.main:app --port 8000
+make prod   # pnpm build → backend/static/, then uvicorn on :8000
 ```
 
 Open <http://localhost:8000> — FastAPI serves both the API and the built SPA.

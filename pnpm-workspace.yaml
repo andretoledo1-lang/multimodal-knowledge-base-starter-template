@@ -1,0 +1,43 @@
+# pnpm settings. On pnpm v11+, non-auth/registry settings live HERE (camelCase),
+# not in .npmrc. Requires pnpm >= 10.16 for the minimumReleaseAge* keys — pinned via
+# package.json "packageManager": "pnpm@11.5.0" (enable with `corepack enable`).
+
+# --- Supply-chain hardening -------------------------------------------------
+# Refuse to install any package version published less than 1 day ago.
+# Unit is MINUTES: 24 * 60 = 1440 (this is also the pnpm v11 default).
+# Applies to transitive deps too. Malicious releases are usually pulled from
+# the registry within ~1 hour, so even a 1-day cooldown is a strong defense.
+# Bump this higher (e.g. 10080 for 7 days) for a stricter quarantine — just
+# note that freshly-pinned deps then can't be installed until they age out.
+minimumReleaseAge: 1440
+
+# Don't silently accept a package whose registry metadata lacks a `time` field
+# (which would otherwise bypass the cooldown). Fail instead. Default: true (skip).
+minimumReleaseAgeIgnoreMissingTime: false
+
+# Fail resolution outright if no version satisfies the cooldown window, rather
+# than quietly resolving to something unexpected.
+minimumReleaseAgeStrict: true
+
+# Allowlist for urgent security hotfixes that must bypass the cooldown, e.g.:
+# minimumReleaseAgeExclude:
+#   - some-package@1.2.3
+# For a one-off override instead: pnpm install --config.minimumReleaseAge=0
+
+# --- Workspace members ------------------------------------------------------
+# Only the frontend is a Node package; the backend is Python (managed by uv).
+# Listing it here makes the repo root the pnpm workspace root, so the settings
+# above apply to every install run from anywhere in the tree.
+packages:
+  - frontend
+
+# --- General ----------------------------------------------------------------
+# Honor engines.node / engines.pnpm in package.json.
+engineStrict: true
+# Auto-install peer dependencies (npm v7+ behavior; pnpm v11 default is already true).
+autoInstallPeers: true
+
+# Lockdown of which deps may run install/build scripts. msw is a transitive dev
+# dependency we don't use; its postinstall (service-worker setup) is not needed.
+allowBuilds:
+  msw: false
