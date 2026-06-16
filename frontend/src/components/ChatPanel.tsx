@@ -46,6 +46,8 @@ const CHAT_TOP_K_KEY = "dante-dashboard-chat-top-k";
 const CHAT_TOP_K_OPTIONS = [3, 5, 8, 12] as const;
 
 type ChatTopK = (typeof CHAT_TOP_K_OPTIONS)[number];
+type ContextScope = "all" | "latest";
+type ContextSourceFilter = "all" | "visual";
 
 interface SourceCluster {
   key: string;
@@ -159,6 +161,19 @@ function groupSourcesByAsset(sources: SearchResult[]) {
 
 function sourceClusterSnippet(cluster: SourceCluster) {
   return cluster.sources.find((src) => src.snippet)?.snippet ?? "";
+}
+
+function sourceHasVisual(src: SearchResult) {
+  return (
+    src.modality === "image" ||
+    Boolean(src.preview_url) ||
+    metadataString(src.metadata, "linked_image_file_id") != null ||
+    metadataString(src.metadata, "preview_image_file_id") != null
+  );
+}
+
+function clusterHasVisual(cluster: SourceCluster) {
+  return cluster.sources.some(sourceHasVisual);
 }
 
 function collectAssistantContextGroups(messages: ChatMessage[]) {
@@ -332,17 +347,35 @@ function ContextPanel({
   onSourceClick,
   onClose,
   width,
+  scope,
+  onScopeChange,
+  sourceFilter,
+  onSourceFilterChange,
 }: {
   groups: ContextGroup[];
   onSourceClick: (r: SearchResult) => void;
   onClose: () => void;
   width: number;
+  scope: ContextScope;
+  onScopeChange: (scope: ContextScope) => void;
+  sourceFilter: ContextSourceFilter;
+  onSourceFilterChange: (filter: ContextSourceFilter) => void;
 }) {
-  const totalAssets = groups.reduce(
+  const scopedGroups = scope === "latest" ? groups.slice(-1) : groups;
+  const visibleGroups =
+    sourceFilter === "visual"
+      ? scopedGroups
+          .map((group) => ({
+            ...group,
+            sourceGroups: group.sourceGroups.filter(clusterHasVisual),
+          }))
+          .filter((group) => group.sourceGroups.length > 0)
+      : scopedGroups;
+  const totalAssets = visibleGroups.reduce(
     (sum, group) => sum + group.sourceGroups.length,
     0,
   );
-  const totalSourceCards = groups.reduce(
+  const totalSourceCards = visibleGroups.reduce(
     (sum, group) =>
       sum +
       group.sourceGroups.reduce(
@@ -351,10 +384,11 @@ function ContextPanel({
       ),
     0,
   );
-  const totalVisualAttachments = groups.reduce(
+  const totalVisualAttachments = visibleGroups.reduce(
     (sum, group) => sum + group.visualAttachments,
     0,
   );
+  const emptyFilteredContext = groups.length > 0 && visibleGroups.length === 0;
 
   return (
     <aside
@@ -398,25 +432,69 @@ function ContextPanel({
               visual links, and preview cards from every answer.
             </p>
           </div>
+        ) : emptyFilteredContext ? (
+          <div className="context-empty flex h-full flex-col items-center justify-center px-5 text-center">
+            <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-md border">
+              <FileText className="h-5 w-5" />
+            </div>
+            <h4 className="text-sm font-semibold">No visual sources here</h4>
+            <p className="mt-1 max-w-[25rem] text-sm text-muted-foreground">
+              Switch back to all sources to inspect the cited text evidence.
+            </p>
+          </div>
         ) : (
           <div className="flex flex-col gap-3">
             <div className="context-summary rounded-md border px-3 py-2">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Conversation context
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Conversation context
+                </div>
+                <div className="context-filter-row flex shrink-0 items-center gap-1">
+                  <Button
+                    variant={scope === "all" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={() => onScopeChange("all")}
+                  >
+                    All
+                  </Button>
+                  <Button
+                    variant={scope === "latest" ? "secondary" : "ghost"}
+                    size="sm"
+                    className="h-6 px-2 text-[11px]"
+                    onClick={() => onScopeChange("latest")}
+                  >
+                    Latest
+                  </Button>
+                </div>
               </div>
-              <div className="mt-1 flex flex-wrap items-center gap-2 text-xs">
-                <span>{groups.length} answers</span>
-                <span>{totalAssets} assets</span>
-                {totalSourceCards !== totalAssets && (
-                  <span>{totalSourceCards} source cards</span>
-                )}
-                {totalVisualAttachments > 0 && (
-                  <span>{totalVisualAttachments} visual attachments</span>
-                )}
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span>{visibleGroups.length} answers</span>
+                  <span>{totalAssets} assets</span>
+                  {totalSourceCards !== totalAssets && (
+                    <span>{totalSourceCards} source cards</span>
+                  )}
+                  {totalVisualAttachments > 0 && (
+                    <span>{totalVisualAttachments} visual attachments</span>
+                  )}
+                </div>
+                <Button
+                  variant={sourceFilter === "visual" ? "secondary" : "ghost"}
+                  size="sm"
+                  className="h-6 shrink-0 px-2 text-[11px]"
+                  onClick={() =>
+                    onSourceFilterChange(
+                      sourceFilter === "visual" ? "all" : "visual",
+                    )
+                  }
+                >
+                  {sourceFilter === "visual" ? "Visual" : "All sources"}
+                </Button>
               </div>
             </div>
 
-            {groups.map((group) => (
+            {visibleGroups.map((group) => (
               <section key={group.answerIndex} className="flex flex-col gap-2">
                 <div className="px-1">
                   <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -505,6 +583,9 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
   const [contextWidth, setContextWidth] = useState(() =>
     readStoredNumber(CONTEXT_WIDTH_KEY, 420, 320, 640),
   );
+  const [contextScope, setContextScope] = useState<ContextScope>("all");
+  const [contextSourceFilter, setContextSourceFilter] =
+    useState<ContextSourceFilter>("all");
   const scrollRef = useRef<HTMLDivElement>(null);
   const [previewItem, setPreviewItem] = useState<PreviewDialogItem | null>(
     null,
@@ -642,12 +723,12 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
           }`}
         >
           <Card className="chat-panel-card flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-none border-0 shadow-none">
-          <header className="chat-panel-header flex shrink-0 flex-col gap-3 border-b px-4 py-4 md:px-6 lg:flex-row lg:items-start lg:justify-between">
+          <header className="chat-panel-header flex shrink-0 flex-col gap-3 border-b px-4 py-3 md:px-5 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
-              <h2 className="truncate text-lg font-semibold">
+              <h2 className="truncate text-base font-semibold">
                 {selectedThreadTitle}
               </h2>
-              <p className="max-w-full break-words text-sm text-muted-foreground">
+              <p className="max-w-full break-words text-xs text-muted-foreground">
                 Grounded answers with cited sources from your knowledge base.
               </p>
             </div>
@@ -704,23 +785,29 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
           </div>
 
           <div className="chat-panel-composer border-t p-3">
-            <div className="flex items-end gap-2">
+            <div className="chat-composer-box flex items-end gap-2 rounded-md border p-2">
               <Textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder="Ask a question…  (Enter to send, Shift+Enter for newline)"
+                placeholder="Ask a question..."
                 rows={1}
-                className="chat-panel-input max-h-40 min-h-9 resize-none py-2 leading-5 field-sizing-content"
+                className="chat-panel-input max-h-40 min-h-10 resize-none border-0 bg-transparent py-2 leading-5 shadow-none field-sizing-content focus-visible:ring-0 focus-visible:ring-offset-0"
               />
               {isStreaming ? (
-                <Button onClick={stop} variant="outline" aria-label="Stop">
+                <Button
+                  onClick={stop}
+                  variant="outline"
+                  className="chat-send-button shrink-0"
+                  aria-label="Stop"
+                >
                   <Square className="h-4 w-4" />
                   Stop
                 </Button>
               ) : (
                 <Button
                   onClick={submit}
+                  className="chat-send-button shrink-0"
                   disabled={
                     draft.trim().length === 0 || !workspace.selectedThreadId
                   }
@@ -732,8 +819,8 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
               )}
             </div>
 
-            <div className="chat-composer-meta mt-2 flex min-h-8 flex-wrap items-center gap-2 border-t pt-2">
-              <label className="chat-model-control relative inline-flex min-w-0 items-center gap-2 rounded-md border px-2 py-1">
+            <div className="chat-composer-meta mt-2 flex min-h-8 flex-wrap items-center gap-2 pt-1">
+              <label className="chat-model-control relative inline-flex min-w-0 max-w-full items-center gap-2 rounded-md border px-2 py-1">
                 <Bot className="h-3.5 w-3.5 shrink-0" />
                 <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   Model
@@ -744,7 +831,7 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
                     setChatModel(event.target.value as ChatModelId)
                   }
                   disabled={isStreaming}
-                  className="chat-model-select h-7 min-w-[220px] appearance-none border-0 bg-transparent py-0 pl-0 pr-7 text-xs font-medium outline-none transition-colors disabled:opacity-60"
+                  className="chat-model-select h-7 min-w-[13rem] max-w-[17rem] appearance-none truncate border-0 bg-transparent py-0 pl-0 pr-7 text-xs font-medium outline-none transition-colors disabled:opacity-60"
                 >
                   {CHAT_MODELS.map((model) => (
                     <option key={model.id} value={model.id}>
@@ -795,6 +882,10 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
               onSourceClick={openPreviewForSource}
               onClose={() => setContextOpen(false)}
               width={contextWidth}
+              scope={contextScope}
+              onScopeChange={setContextScope}
+              sourceFilter={contextSourceFilter}
+              onSourceFilterChange={setContextSourceFilter}
             />
           </div>
         )}

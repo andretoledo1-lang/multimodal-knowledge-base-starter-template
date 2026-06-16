@@ -11,6 +11,8 @@ import {
 
 const SELECTED_PROJECT_KEY = "dante-dashboard-selected-project-id";
 const SELECTED_THREAD_KEY = "dante-dashboard-selected-thread-id";
+const INCLUDE_ARCHIVED_THREADS_KEY =
+  "dante-dashboard-include-archived-threads";
 
 function readStoredId(key: string) {
   if (typeof window === "undefined") return null;
@@ -24,6 +26,19 @@ function writeStoredId(key: string, value: string | null) {
   else window.localStorage.removeItem(key);
 }
 
+function readStoredBoolean(key: string, fallback: boolean) {
+  if (typeof window === "undefined") return fallback;
+  const value = window.localStorage.getItem(key);
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return fallback;
+}
+
+function writeStoredBoolean(key: string, value: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(key, String(value));
+}
+
 export function useChatWorkspace() {
   const qc = useQueryClient();
   const [selectedProjectId, setSelectedProjectIdState] = useState<string | null>(
@@ -31,6 +46,9 @@ export function useChatWorkspace() {
   );
   const [selectedThreadId, setSelectedThreadIdState] = useState<string | null>(
     () => readStoredId(SELECTED_THREAD_KEY),
+  );
+  const [includeArchivedThreads, setIncludeArchivedThreadsState] = useState(() =>
+    readStoredBoolean(INCLUDE_ARCHIVED_THREADS_KEY, false),
   );
 
   const bootstrap = useQuery({
@@ -44,8 +62,11 @@ export function useChatWorkspace() {
   });
 
   const threadsQuery = useQuery({
-    queryKey: ["chat-threads", selectedProjectId],
-    queryFn: () => api.threads(selectedProjectId as string),
+    queryKey: ["chat-threads", selectedProjectId, includeArchivedThreads],
+    queryFn: () =>
+      api.threads(selectedProjectId as string, {
+        include_archived: includeArchivedThreads,
+      }),
     enabled: selectedProjectId != null,
   });
 
@@ -65,6 +86,11 @@ export function useChatWorkspace() {
     writeStoredId(SELECTED_THREAD_KEY, threadId);
   };
 
+  const setIncludeArchivedThreads = (includeArchived: boolean) => {
+    setIncludeArchivedThreadsState(includeArchived);
+    writeStoredBoolean(INCLUDE_ARCHIVED_THREADS_KEY, includeArchived);
+  };
+
   useEffect(() => {
     if (!bootstrap.data) return;
     if (!selectedProjectId) setSelectedProjectId(bootstrap.data.project.id);
@@ -82,7 +108,11 @@ export function useChatWorkspace() {
 
   useEffect(() => {
     const threads = threadsQuery.data?.threads;
-    if (!threads || threads.length === 0) return;
+    if (!threads) return;
+    if (threads.length === 0) {
+      if (selectedThreadId) setSelectedThreadId(null);
+      return;
+    }
     if (!selectedThreadId || !threads.some((t) => t.id === selectedThreadId)) {
       setSelectedThreadId(threads[0].id);
     }
@@ -183,6 +213,7 @@ export function useChatWorkspace() {
     selectedThread,
     selectedProjectId,
     selectedThreadId,
+    includeArchivedThreads,
     threadDetail: threadDetailQuery.data ?? null,
     isLoading:
       bootstrap.isLoading ||
@@ -198,6 +229,7 @@ export function useChatWorkspace() {
       setSelectedThreadId(null);
     },
     selectThread: (thread: ChatThread) => setSelectedThreadId(thread.id),
+    setIncludeArchivedThreads,
     createProject: (name: string, options?: { onSuccess?: () => void }) =>
       createProject.mutate(name, { onSuccess: options?.onSuccess }),
     createThread: (chatModel?: string, topK?: number) => {
@@ -210,15 +242,20 @@ export function useChatWorkspace() {
       if (!projectId) return;
       updateProject.mutate({ projectId, memory, instructions });
     },
-    renameProject: (name: string) => {
+    renameProject: (name: string, options?: { onSuccess?: () => void }) => {
       const projectId = selectedProjectId;
       if (!projectId) return;
-      updateProject.mutate({ projectId, name });
+      updateProject.mutate({ projectId, name }, { onSuccess: options?.onSuccess });
     },
-    renameThread: (threadId: string, title: string) =>
-      updateThread.mutate({ threadId, title }),
-    archiveThread: (threadId: string) =>
-      updateThread.mutate({ threadId, archived: true }),
+    renameThread: (
+      threadId: string,
+      title: string,
+      options?: { onSuccess?: () => void },
+    ) => updateThread.mutate({ threadId, title }, { onSuccess: options?.onSuccess }),
+    pinThread: (threadId: string, pinned: boolean) =>
+      updateThread.mutate({ threadId, pinned }),
+    archiveThread: (threadId: string, archived = true) =>
+      updateThread.mutate({ threadId, archived }),
     refreshThread: () => {
       if (selectedThreadId) {
         qc.invalidateQueries({ queryKey: ["chat-thread", selectedThreadId] });

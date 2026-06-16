@@ -1,4 +1,5 @@
 import {
+  useMemo,
   useRef,
   useEffect,
   useState,
@@ -12,8 +13,11 @@ import {
   Loader2,
   MessageSquare,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
   Save,
+  Search,
   Trash2,
   Upload,
   X,
@@ -46,6 +50,11 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
   const [memoryDraft, setMemoryDraft] = useState("");
   const [isAddingProject, setIsAddingProject] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
+  const [isRenamingProject, setIsRenamingProject] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState("");
+  const [editingThreadId, setEditingThreadId] = useState<string | null>(null);
+  const [threadTitleDraft, setThreadTitleDraft] = useState("");
+  const [threadSearch, setThreadSearch] = useState("");
   const sidebarStyle = {
     "--sidebar-width": `${width}px`,
   } as CSSProperties;
@@ -53,6 +62,13 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
   const hasStats = stats != null;
   const total = stats?.total ?? 0;
   const canClear = hasStats && total > 0;
+  const filteredThreads = useMemo(() => {
+    const query = threadSearch.trim().toLowerCase();
+    if (!query) return workspace.threads;
+    return workspace.threads.filter((thread) =>
+      thread.title.toLowerCase().includes(query),
+    );
+  }, [threadSearch, workspace.threads]);
 
   const onPickFiles = () => fileInput.current?.click();
   useEffect(() => {
@@ -83,15 +99,57 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
     });
   };
 
-  const onRenameProject = () => {
-    const current = workspace.selectedProject?.name ?? "";
-    const name = window.prompt("Project name", current)?.trim();
-    if (name && name !== current) workspace.renameProject(name);
+  const onStartProjectRename = () => {
+    setProjectNameDraft(workspace.selectedProject?.name ?? "");
+    setIsRenamingProject(true);
   };
 
-  const onRenameThread = (threadId: string, currentTitle: string) => {
-    const title = window.prompt("Thread title", currentTitle)?.trim();
-    if (title && title !== currentTitle) workspace.renameThread(threadId, title);
+  const onCancelProjectRename = () => {
+    if (workspace.isUpdatingProject) return;
+    setProjectNameDraft("");
+    setIsRenamingProject(false);
+  };
+
+  const onSubmitProjectRename = () => {
+    if (workspace.isUpdatingProject) return;
+    const current = workspace.selectedProject?.name ?? "";
+    const name = projectNameDraft.trim();
+    if (!name || name === current) {
+      onCancelProjectRename();
+      return;
+    }
+    workspace.renameProject(name, {
+      onSuccess: () => {
+        setProjectNameDraft("");
+        setIsRenamingProject(false);
+      },
+    });
+  };
+
+  const onStartThreadRename = (threadId: string, currentTitle: string) => {
+    setEditingThreadId(threadId);
+    setThreadTitleDraft(currentTitle);
+  };
+
+  const onCancelThreadRename = () => {
+    if (workspace.isUpdatingThread) return;
+    setEditingThreadId(null);
+    setThreadTitleDraft("");
+  };
+
+  const onSubmitThreadRename = (threadId: string, currentTitle: string) => {
+    if (workspace.isUpdatingThread) return;
+    const title = threadTitleDraft.trim();
+    if (!title || title === currentTitle) {
+      onCancelThreadRename();
+      return;
+    }
+    workspace.renameThread(threadId, title, {
+      onSuccess: () => {
+        setEditingThreadId(null);
+        setThreadTitleDraft("");
+      },
+    });
   };
 
   const onFilesChosen = (e: ChangeEvent<HTMLInputElement>) => {
@@ -194,6 +252,10 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
                 <Skeleton className="h-8" />
                 <Skeleton className="h-8" />
               </>
+            ) : workspace.projects.length === 0 ? (
+              <div className="rounded-md border border-dashed px-2 py-2 text-xs text-muted-foreground">
+                No projects yet
+              </div>
             ) : (
               workspace.projects.map((project) => (
                 <button
@@ -222,70 +284,180 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
             <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Threads
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7"
-              onClick={() => workspace.createThread()}
-              disabled={!workspace.selectedProjectId || workspace.isCreatingThread}
-              aria-label="New thread"
-            >
-              {workspace.isCreatingThread ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Plus className="h-3.5 w-3.5" />
-              )}
-            </Button>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                variant={workspace.includeArchivedThreads ? "secondary" : "ghost"}
+                size="icon"
+                className="h-7 w-7"
+                onClick={() =>
+                  workspace.setIncludeArchivedThreads(
+                    !workspace.includeArchivedThreads,
+                  )
+                }
+                aria-label={
+                  workspace.includeArchivedThreads
+                    ? "Hide archived threads"
+                    : "Show archived threads"
+                }
+              >
+                <Archive className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => workspace.createThread()}
+                disabled={!workspace.selectedProjectId || workspace.isCreatingThread}
+                aria-label="New thread"
+              >
+                {workspace.isCreatingThread ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Plus className="h-3.5 w-3.5" />
+                )}
+              </Button>
+            </div>
           </div>
+          <label className="sidebar-search mb-2 flex h-8 items-center gap-2 rounded-md border px-2">
+            <Search className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+            <Input
+              value={threadSearch}
+              onChange={(event) => setThreadSearch(event.target.value)}
+              placeholder="Search threads"
+              className="h-6 flex-1 border-0 bg-transparent px-0 py-0 text-xs shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+              aria-label="Search threads"
+            />
+          </label>
           <div className="comfortable-scrollbar flex max-h-44 flex-col gap-1 overflow-y-auto pr-1 md:max-h-52">
             {workspace.threads.length === 0 && workspace.isLoading ? (
               <>
                 <Skeleton className="h-10" />
                 <Skeleton className="h-10" />
               </>
+            ) : filteredThreads.length === 0 ? (
+              <div className="rounded-md border border-dashed px-2 py-3 text-xs text-muted-foreground">
+                {threadSearch.trim()
+                  ? "No matching threads"
+                  : workspace.includeArchivedThreads
+                    ? "No threads yet"
+                    : "No active threads"}
+              </div>
             ) : (
-              workspace.threads.map((thread) => (
+              filteredThreads.map((thread) => (
                 <div
                   key={thread.id}
                   className={`group flex min-h-10 items-center gap-1 rounded-md border px-2 py-1.5 transition-colors ${
                     workspace.selectedThreadId === thread.id
                       ? "border-primary/45 bg-primary/15"
-                      : "border-border/60 bg-background/45"
+                      : thread.archived
+                        ? "border-border/45 bg-background/25 opacity-70"
+                        : "border-border/60 bg-background/45"
                   }`}
                 >
-                  <button
-                    type="button"
-                    onClick={() => workspace.selectThread(thread)}
-                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                  >
-                    <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0 flex-1 truncate text-sm">
-                      {thread.title}
-                    </span>
-                    {thread.message_count > 0 && (
-                      <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
-                        {thread.message_count}
-                      </span>
-                    )}
-                  </button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 opacity-0 transition-opacity group-hover:opacity-100"
-                    onClick={() => onRenameThread(thread.id, thread.title)}
-                    aria-label="Rename thread"
-                  >
-                    <Pencil className="h-3 w-3" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-6 w-6 opacity-0 transition-opacity group-hover:opacity-100"
-                    onClick={() => workspace.archiveThread(thread.id)}
-                    aria-label="Archive thread"
-                  >
-                    <Archive className="h-3 w-3" />
-                  </Button>
+                  {editingThreadId === thread.id ? (
+                    <>
+                      <Input
+                        autoFocus
+                        value={threadTitleDraft}
+                        onChange={(event) =>
+                          setThreadTitleDraft(event.target.value)
+                        }
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            onSubmitThreadRename(thread.id, thread.title);
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            onCancelThreadRename();
+                          }
+                        }}
+                        className="h-7 min-w-0 flex-1 px-2 text-xs"
+                        aria-label="Thread title"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={() => onSubmitThreadRename(thread.id, thread.title)}
+                        disabled={workspace.isUpdatingThread}
+                        aria-label="Save thread title"
+                      >
+                        {workspace.isUpdatingThread ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Save className="h-3 w-3" />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        onClick={onCancelThreadRename}
+                        disabled={workspace.isUpdatingThread}
+                        aria-label="Cancel thread rename"
+                      >
+                        <X className="h-3 w-3" />
+                      </Button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => workspace.selectThread(thread)}
+                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                      >
+                        <MessageSquare className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 flex-1 truncate text-sm">
+                          {thread.title}
+                        </span>
+                        {thread.message_count > 0 && (
+                          <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                            {thread.message_count}
+                          </span>
+                        )}
+                      </button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 shrink-0 opacity-75 transition-opacity hover:opacity-100"
+                        onClick={() => workspace.pinThread(thread.id, !thread.pinned)}
+                        disabled={workspace.isUpdatingThread}
+                        aria-label={thread.pinned ? "Unpin thread" : "Pin thread"}
+                      >
+                        {thread.pinned ? (
+                          <PinOff className="h-3 w-3" />
+                        ) : (
+                          <Pin className="h-3 w-3" />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 shrink-0 opacity-75 transition-opacity hover:opacity-100"
+                        onClick={() =>
+                          onStartThreadRename(thread.id, thread.title)
+                        }
+                        aria-label="Rename thread"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6 shrink-0 opacity-75 transition-opacity hover:opacity-100"
+                        onClick={() =>
+                          workspace.archiveThread(thread.id, !thread.archived)
+                        }
+                        disabled={workspace.isUpdatingThread}
+                        aria-label={
+                          thread.archived ? "Unarchive thread" : "Archive thread"
+                        }
+                      >
+                        <Archive className="h-3 w-3" />
+                      </Button>
+                    </>
+                  )}
                 </div>
               ))
             )}
@@ -295,24 +467,73 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
         {workspace.selectedProject && (
           <section className="shrink-0 rounded-md border bg-background/35 p-2">
             <div className="mb-2 flex items-center justify-between gap-2">
-              <div className="min-w-0">
-                <div className="truncate text-xs font-semibold">
-                  {workspace.selectedProject.name}
-                </div>
+              <div className="min-w-0 flex-1">
+                {isRenamingProject ? (
+                  <Input
+                    autoFocus
+                    value={projectNameDraft}
+                    onChange={(event) => setProjectNameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        onSubmitProjectRename();
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        onCancelProjectRename();
+                      }
+                    }}
+                    className="h-7 px-2 text-xs"
+                    aria-label="Project name"
+                  />
+                ) : (
+                  <div className="truncate text-xs font-semibold">
+                    {workspace.selectedProject.name}
+                  </div>
+                )}
                 <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
                   Project memory
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  onClick={onRenameProject}
-                  aria-label="Rename project"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                </Button>
+                {isRenamingProject ? (
+                  <>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={onSubmitProjectRename}
+                      disabled={workspace.isUpdatingProject}
+                      aria-label="Save project name"
+                    >
+                      {workspace.isUpdatingProject ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Save className="h-3.5 w-3.5" />
+                      )}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={onCancelProjectRename}
+                      disabled={workspace.isUpdatingProject}
+                      aria-label="Cancel project rename"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={onStartProjectRename}
+                    aria-label="Rename project"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"

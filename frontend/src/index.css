@@ -77,6 +77,10 @@
   --app-line: color-mix(in srgb, #978e7a 42%, transparent);
   --app-glow-lime: color-mix(in srgb, #a4d27d 22%, transparent);
   --app-glow-gold: color-mix(in srgb, #c9a93f 18%, transparent);
+  --app-work-surface: #ffffff;
+  --app-work-surface-soft: #f7f5f2;
+  --app-work-border: color-mix(in srgb, #978e7a 42%, transparent);
+  --app-work-muted: #645d4f;
   --app-shadow-card: 0 18px 42px -34px rgba(33, 30, 23, 0.42);
   --app-shadow-soft: 0 24px 70px -52px rgba(33, 30, 23, 0.55);
 }
@@ -91,6 +95,10 @@
   --app-line: color-mix(in srgb, #5a694e 54%, transparent);
   --app-glow-lime: color-mix(in srgb, #b6ffba 16%, transparent);
   --app-glow-gold: color-mix(in srgb, #c9a93f 14%, transparent);
+  --app-work-surface: #26292d;
+  --app-work-surface-soft: #2f3338;
+  --app-work-border: #464b52;
+  --app-work-muted: #a8adb4;
   --app-shadow-card: 0 20px 56px -36px rgba(0, 0, 0, 0.72);
   --app-shadow-soft: 0 28px 80px -54px rgba(0, 0, 0, 0.82);
 }
@@ -194,6 +202,21 @@
     box-shadow: inset -1px 0 0 color-mix(in srgb, var(--color-primary) 12%, transparent);
   }
 
+  .app-sidebar section {
+    min-width: 0;
+  }
+
+  .app-sidebar button,
+  .app-sidebar input,
+  .app-sidebar textarea {
+    border-color: color-mix(in srgb, var(--app-line) 82%, transparent);
+  }
+
+  .sidebar-search {
+    border-color: color-mix(in srgb, var(--app-line) 78%, transparent);
+    background: color-mix(in srgb, var(--color-background) 42%, transparent);
+  }
+
   .app-sidebar-brand {
     position: relative;
     z-index: 10;
@@ -269,14 +292,14 @@
   .chat-panel-card,
   .chat-workspace,
   .preview-dialog-panel {
-    border-color: #464b52 !important;
-    background: #26292d !important;
+    border-color: var(--app-work-border) !important;
+    background: var(--app-work-surface) !important;
     color: #e7eaee !important;
     box-shadow: 0 22px 62px -42px rgba(0, 0, 0, 0.78);
   }
 
   .chat-workspace {
-    border-color: #464b52 !important;
+    border-color: var(--app-work-border) !important;
     box-shadow: 0 18px 48px -38px rgba(0, 0, 0, 0.82);
   }
 
@@ -286,17 +309,23 @@
   }
 
   .chat-panel-scroll {
-    background: #26292d;
+    background: var(--app-work-surface);
   }
 
   .chat-panel-header {
     border-color: #3f444a;
-    background: #26292d;
+    background: var(--app-work-surface);
   }
 
   .chat-panel-composer {
-    border-color: #464b52;
-    background: #26292d;
+    border-color: var(--app-work-border);
+    background: var(--app-work-surface);
+  }
+
+  .chat-composer-box {
+    border-color: #565c64;
+    background: #222529;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.015);
   }
 
   .chat-composer-meta {
@@ -304,14 +333,14 @@
   }
 
   .context-panel {
-    border-color: #464b52 !important;
-    background: #26292d !important;
+    border-color: var(--app-work-border) !important;
+    background: var(--app-work-surface) !important;
     color: #d1d2d3;
   }
 
   .context-panel-header {
     border-color: #3f444a !important;
-    background: #26292d;
+    background: var(--app-work-surface);
   }
 
   .context-panel h3,
@@ -355,7 +384,7 @@
   .chat-model-control,
   .chat-topk-control {
     border-color: #3f444a;
-    background: #222529;
+    background: color-mix(in srgb, #222529 88%, transparent);
     color: #a8adb4;
   }
 
@@ -374,8 +403,8 @@
   .context-empty > div,
   .context-summary,
   .context-source-card {
-    border-color: #464b52 !important;
-    background: #2f3338 !important;
+    border-color: var(--app-work-border) !important;
+    background: var(--app-work-surface-soft) !important;
   }
 
   .context-summary {
@@ -385,6 +414,16 @@
   .context-source-card:hover {
     border-color: #66717c !important;
     background: #343940 !important;
+  }
+
+  .context-filter-row button,
+  .context-summary button {
+    border-radius: var(--radius-sm);
+    color: #c9ced5;
+  }
+
+  .chat-send-button {
+    min-width: 5.75rem;
   }
 
   .context-source-index {
@@ -415,8 +454,8 @@
   .slack-panel .surface-card,
   .chat-panel-card .surface-card,
   .preview-dialog-panel .surface-card {
-    border-color: #464b52 !important;
-    background: #2f3338 !important;
+    border-color: var(--app-work-border) !important;
+    background: var(--app-work-surface-soft) !important;
     color: #e7eaee !important;
   }
 
@@ -426,7 +465,7 @@
   .chat-panel-card button.bg-background\/70,
   .context-panel .media-frame,
   .preview-dialog-panel .media-frame {
-    border-color: #464b52 !important;
+    border-color: var(--app-work-border) !important;
     background: #222529 !important;
   }
 
