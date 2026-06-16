@@ -217,6 +217,131 @@
     background: color-mix(in srgb, var(--color-background) 42%, transparent);
   }
 
+  .sidebar-workspace-header,
+  .sidebar-footer {
+    border-color: color-mix(in srgb, var(--app-line) 72%, transparent);
+    background: color-mix(in srgb, #071300 56%, transparent);
+  }
+
+  .sidebar-section-label {
+    color: color-mix(in srgb, var(--color-muted-foreground) 92%, white 8%);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+  }
+
+  .sidebar-inline-editor,
+  .sidebar-empty-state {
+    border-color: color-mix(in srgb, var(--app-line) 82%, transparent);
+    background: color-mix(in srgb, var(--color-background) 36%, transparent);
+    color: var(--color-muted-foreground);
+  }
+
+  .sidebar-project-row,
+  .sidebar-thread-row {
+    border-color: color-mix(in srgb, var(--app-line) 78%, transparent);
+    background: color-mix(in srgb, var(--color-background) 34%, transparent);
+    color: color-mix(in srgb, var(--color-foreground) 78%, transparent);
+  }
+
+  .sidebar-project-row:hover,
+  .sidebar-thread-row:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 34%, var(--app-line));
+    background: color-mix(in srgb, var(--color-background) 48%, transparent);
+    color: var(--color-foreground);
+  }
+
+  .sidebar-project-row.is-active,
+  .sidebar-thread-row.is-active {
+    border-color: color-mix(in srgb, var(--color-primary) 56%, var(--app-line));
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 18%, transparent), transparent 82%),
+      color-mix(in srgb, var(--color-background) 54%, transparent);
+    color: var(--color-foreground);
+    box-shadow:
+      inset 2px 0 0 color-mix(in srgb, var(--color-primary) 82%, transparent),
+      0 12px 28px -24px color-mix(in srgb, var(--color-primary) 52%, transparent);
+  }
+
+  .sidebar-thread-row.is-archived {
+    opacity: 0.58;
+  }
+
+  .sidebar-row-action {
+    color: color-mix(in srgb, var(--color-muted-foreground) 86%, transparent);
+    opacity: 0.62;
+    transition:
+      opacity 0.14s ease,
+      color 0.14s ease,
+      background-color 0.14s ease;
+  }
+
+  .sidebar-thread-row:hover .sidebar-row-action,
+  .sidebar-row-action:focus-visible {
+    opacity: 1;
+  }
+
+  .sidebar-quiet-icon,
+  .sidebar-settings-button {
+    color: color-mix(in srgb, var(--color-muted-foreground) 92%, white 8%);
+  }
+
+  .sidebar-quiet-icon:hover,
+  .sidebar-settings-button:hover {
+    background: color-mix(in srgb, var(--color-primary) 12%, transparent) !important;
+    color: var(--color-foreground) !important;
+  }
+
+  .sidebar-count-pill {
+    border: 1px solid color-mix(in srgb, var(--app-line) 78%, transparent);
+    border-radius: 999px;
+    color: var(--color-muted-foreground);
+    padding: 0 5px;
+  }
+
+  .settings-dialog-panel,
+  .settings-dialog-panel .settings-section,
+  .settings-dialog-panel .settings-kb-total,
+  .settings-dialog-panel .settings-modality-row,
+  .settings-dialog-panel .settings-empty {
+    border-color: var(--app-work-border) !important;
+  }
+
+  .settings-dialog-panel {
+    background: var(--app-work-surface) !important;
+    color: #e7eaee !important;
+    box-shadow: 0 28px 90px -50px rgba(0, 0, 0, 0.9);
+  }
+
+  .settings-dialog-header {
+    border-color: #3f444a !important;
+    background: #222529;
+  }
+
+  .settings-dialog-panel .settings-section,
+  .settings-dialog-panel .settings-kb-total,
+  .settings-dialog-panel .settings-modality-row,
+  .settings-dialog-panel .settings-empty {
+    background: var(--app-work-surface-soft) !important;
+  }
+
+  .settings-dialog-panel input,
+  .settings-dialog-panel textarea {
+    border-color: #565c64 !important;
+    background: #222529 !important;
+    color: #eceff3 !important;
+  }
+
+  .settings-dialog-panel input::placeholder,
+  .settings-dialog-panel textarea::placeholder {
+    color: #a8adb4;
+  }
+
+  .settings-dialog-panel .text-muted-foreground {
+    color: #a8adb4 !important;
+  }
+
   .app-sidebar-brand {
     position: relative;
     z-index: 10;

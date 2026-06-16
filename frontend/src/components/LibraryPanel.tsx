@@ -142,7 +142,7 @@ export function LibraryPanel() {
           <EmptyState
             icon={FolderOpen}
             title="Your knowledge base is empty"
-            description="Drag and drop files anywhere on this panel, or use Upload files in the sidebar."
+            description="Drag and drop files anywhere on this panel, or use Upload files in Settings."
           />
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
