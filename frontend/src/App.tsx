@@ -88,7 +88,7 @@ export default function App() {
           onValueChange={(v) => setTab(v as TabKey)}
           className="flex h-full min-w-0 flex-col gap-0"
         >
-          <div className="app-topbar comfortable-scrollbar flex items-center justify-between gap-3 overflow-x-auto border-b px-4 py-3 md:px-6">
+          <div className="app-topbar app-window-drag comfortable-scrollbar flex items-center justify-between gap-3 overflow-x-auto border-b px-4 py-3 md:px-6">
             <TabsList>
               <TabsTrigger value="search">
                 <Search className="h-4 w-4" /> Search

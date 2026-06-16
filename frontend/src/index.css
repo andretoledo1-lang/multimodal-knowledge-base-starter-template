@@ -163,6 +163,24 @@
     backdrop-filter: blur(18px);
   }
 
+  .app-window-drag {
+    -webkit-app-region: drag;
+  }
+
+  .app-window-no-drag,
+  button,
+  input,
+  textarea,
+  select,
+  a,
+  [role="button"],
+  [role="tab"],
+  [role="combobox"],
+  [role="slider"],
+  [contenteditable="true"] {
+    -webkit-app-region: no-drag;
+  }
+
   .app-content {
     background:
       linear-gradient(180deg, color-mix(in srgb, var(--app-canvas) 78%, transparent), var(--app-canvas));
@@ -180,12 +198,14 @@
     position: relative;
     z-index: 10;
     height: 58px;
+    -webkit-app-region: drag;
     background: linear-gradient(180deg, #050d03 0%, #081603 100%);
   }
 
   .app-resize-handle {
     touch-action: none;
     user-select: none;
+    -webkit-app-region: no-drag;
   }
 
   .app-resize-handle-left {
