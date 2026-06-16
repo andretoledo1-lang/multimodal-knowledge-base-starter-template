@@ -50,7 +50,7 @@ The previous Obsidian sidecar is kept as rollback only:
 Expected current KB shape:
 
 ```json
-{"total":4188,"by_modality":{"image":2094,"text":2094}}
+{"total":6281,"by_modality":{"image":2094,"text":4187}}
 ```
 
 ## Local Data Stores

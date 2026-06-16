@@ -24,7 +24,7 @@ def test_stats_returns_sidecar_counts() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
         assert request.url.path == "/api/stats"
-        return httpx.Response(200, json={"total": 4188, "by_modality": {"image": 2094}})
+        return httpx.Response(200, json={"total": 6281, "by_modality": {"image": 2094, "text": 4187}})
 
     client = make_client(handler)
 
@@ -32,8 +32,8 @@ def test_stats_returns_sidecar_counts() -> None:
         "ok": True,
         "status": "ok",
         "api_base_url": "http://sidecar.test",
-        "total": 4188,
-        "by_modality": {"image": 2094},
+        "total": 6281,
+        "by_modality": {"image": 2094, "text": 4187},
     }
 
 

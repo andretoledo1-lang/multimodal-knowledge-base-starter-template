@@ -146,7 +146,7 @@ scripts/smoke-dante-dashboard.sh
 Expected current KB shape:
 
 ```json
-{"total":4188,"by_modality":{"image":2094,"text":2094}}
+{"total":6281,"by_modality":{"image":2094,"text":4187}}
 ```
 
 Before shipping code changes, choose the smallest relevant set:

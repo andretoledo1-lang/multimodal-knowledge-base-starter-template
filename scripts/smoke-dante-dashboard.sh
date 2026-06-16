@@ -4,8 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_URL="${DANTE_MULTIMODAL_API_BASE_URL:-http://127.0.0.1:8035}"
 FRONTEND_URL="${DANTE_MULTIMODAL_DASHBOARD_URL:-http://127.0.0.1:5173}"
-EXPECTED_TOTAL="${DANTE_MULTIMODAL_EXPECTED_TOTAL:-4188}"
+EXPECTED_TOTAL="${DANTE_MULTIMODAL_EXPECTED_TOTAL:-6281}"
+EXPECTED_IMAGES="${DANTE_MULTIMODAL_EXPECTED_IMAGES:-2094}"
+EXPECTED_TEXTS="${DANTE_MULTIMODAL_EXPECTED_TEXTS:-4187}"
+EXPECTED_DECOUPAGE="${DANTE_MULTIMODAL_EXPECTED_DECOUPAGE:-2093}"
 ENV_FILE="${ROOT_DIR}/backend/.env"
+UV_BIN="${UV_BIN:-uv}"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -34,6 +38,42 @@ texts="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("by_modalit
 
 [[ "${total}" == "${EXPECTED_TOTAL}" ]] || fail "unexpected KB total ${total}, expected ${EXPECTED_TOTAL}"
 [[ -n "${images}" && -n "${texts}" ]] || fail "stats response is missing image/text modality counts"
+[[ "${images}" == "${EXPECTED_IMAGES}" ]] || fail "unexpected image count ${images}, expected ${EXPECTED_IMAGES}"
+[[ "${texts}" == "${EXPECTED_TEXTS}" ]] || fail "unexpected text count ${texts}, expected ${EXPECTED_TEXTS}"
+
+decoupage_check="$(
+  cd "${ROOT_DIR}/backend" && EXPECTED_DECOUPAGE="${EXPECTED_DECOUPAGE}" "${UV_BIN}" run python - <<'PY'
+import os
+from app.deps import get_kb
+
+expected = int(os.environ["EXPECTED_DECOUPAGE"])
+kb = get_kb()
+data = kb.collection.get(where={"artifact_type": "visual_decoupage_bundle"}, include=["metadatas"])
+ids = data.get("ids") or []
+metas = data.get("metadatas") or []
+if len(ids) != expected:
+    raise SystemExit(f"unexpected decoupage count {len(ids)}, expected {expected}")
+
+sample_id = "dante_visual_decoupage_0d25ee0747336d6011c0e137427b6aca"
+sample = kb.collection.get(ids=[sample_id], include=["metadatas"])
+if not sample.get("ids"):
+    raise SystemExit(f"missing sample decoupage node {sample_id}")
+meta = (sample.get("metadatas") or [{}])[0] or {}
+linked = "dante_visual_img_0d25ee0747336d6011c0e137427b6aca"
+expected_meta = {
+    "dataset_id": "dante-visual-reference-assets",
+    "artifact_type": "visual_decoupage_bundle",
+    "schema": "decoupage_sidecar",
+    "dante_image_id": "aftersun-2022-001",
+    "linked_image_file_id": linked,
+    "preview_image_file_id": linked,
+}
+for key, expected_value in expected_meta.items():
+    if meta.get(key) != expected_value:
+        raise SystemExit(f"sample decoupage metadata mismatch {key}: {meta.get(key)!r}")
+print(f"decoupage={len(ids)} sample={sample_id}")
+PY
+)" || fail "decoupage Chroma package check failed"
 
 curl -fsSI --max-time 5 "${FRONTEND_URL}/" >/dev/null || fail "frontend is unavailable"
 
@@ -79,6 +119,7 @@ archived="$(
 
 note "workspace=${ROOT_DIR}"
 note "backend=${BACKEND_URL} total=${total} image=${images} text=${texts}"
+note "${decoupage_check}"
 note "frontend=${FRONTEND_URL}"
 note "chat_workspace_project=${project_id} smoke_thread=${thread_id}"
 note "KB read-only smoke complete"

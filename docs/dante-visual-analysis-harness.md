@@ -117,6 +117,30 @@ Safe mock smoke:
 uv run --project backend python scripts/dante_visual_decoupage_harness.py --run-id visual-decoupage-smoke generate --provider mock --sample 1 --lens solo --force
 ```
 
+Promote and ingest the verified Gemini production decoupage run:
+
+```bash
+uv run --project backend python scripts/dante_visual_decoupage_ingest.py \
+  --vault-root /Users/vidigal/Dante \
+  --dataset-root /Users/vidigal/Dante/commercial-film-production-kb/13-visual-reference-assets \
+  --source-run-id visual-decoupage-gemini31-production-20260616-codex \
+  --run-id visual-decoupage-ingest-20260616-codex
+```
+
+Current production decoupage validation:
+
+- source run id: `visual-decoupage-gemini31-production-20260616-codex`;
+- provider: Gemini Developer API, not Vertex;
+- model: `gemini-3.1-pro-preview`;
+- target count: 2,093;
+- OK count: 2,093;
+- error count: 0;
+- average confidence: 0.9031;
+- ingest run id: `visual-decoupage-ingest-20260616-codex`;
+- Chroma decoupage nodes embedded: 2,093;
+- missing linked image rows: 0;
+- failed rows: 0.
+
 Manifests and decisions:
 
 ```text
@@ -126,6 +150,10 @@ commercial-film-production-kb/13-visual-reference-assets/analysis-cards/review-d
 commercial-film-production-kb/13-visual-reference-assets/analysis-cards/review-state.tsv
 commercial-film-production-kb/13-visual-reference-assets/analysis-cards/manifests/<run-id>/vector-ingest-manifest.tsv
 commercial-film-production-kb/13-visual-reference-assets/analysis-cards/manifests/<run-id>/vector-ingest-summary.json
+commercial-film-production-kb/13-visual-reference-assets/analysis-cards/decoupage/manifests/<run-id>/decoupage-promotion-manifest.tsv
+commercial-film-production-kb/13-visual-reference-assets/analysis-cards/decoupage/manifests/<run-id>/decoupage-promotion-summary.json
+commercial-film-production-kb/13-visual-reference-assets/analysis-cards/decoupage/manifests/<run-id>/decoupage-ingest-manifest.tsv
+commercial-film-production-kb/13-visual-reference-assets/analysis-cards/decoupage/manifests/<run-id>/decoupage-ingest-summary.json
 ```
 
 Review:

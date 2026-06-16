@@ -1,9 +1,8 @@
 # Dante Visual Asset Package Contract
 
 This document is the operating contract for agents working on Dante Multimodal
-Dashboard visual assets. It describes how each image is packaged now, how it
-must be packaged after the premium decoupage ingest upgrade, and how all future
-visual ingests must be linked.
+Dashboard visual assets. It describes how each indexed image package is linked
+now and how all future visual ingests must preserve those links.
 
 ## Core Rule
 
@@ -73,25 +72,40 @@ aftersun-2022-001
     │   /Users/vidigal/Dante/commercial-film-production-kb/13-visual-reference-assets/analysis-cards/decoupage/markdown/film-stills/aftersun-2022/aftersun-2022-001.md
     ├── profile_id:
     │   art_grade_decoupage_vision_analyst.gpt55_port.v1
+    ├── provider: gemini
+    ├── model: gemini-3.1-pro-preview
     ├── lens: solo
     ├── frame_type: film_frame
-    ├── source right now: mock smoke only
-    └── status right now: exists on disk, not indexed in Chroma yet
+    ├── source run id:
+    │   visual-decoupage-gemini31-production-20260616-codex
+    ├── ingest run id:
+    │   visual-decoupage-ingest-20260616-codex
+    ├── KB node:
+    │   dante_visual_decoupage_0d25ee0747336d6011c0e137427b6aca
+    ├── linked_image_file_id:
+    │   dante_visual_img_0d25ee0747336d6011c0e137427b6aca
+    ├── preview_image_file_id:
+    │   dante_visual_img_0d25ee0747336d6011c0e137427b6aca
+    └── status: indexed in Chroma as text
 ```
 
-Current KB shape remains:
+Current verified KB shape after the premium decoupage ingest:
 
 ```json
-{"total": 4188, "by_modality": {"image": 2094, "text": 2094}}
+{"total": 6281, "by_modality": {"image": 2094, "text": 4187}}
 ```
 
-This means the current KB contains image nodes plus Gemini card text nodes. It
-does not yet contain premium decoupage text nodes.
+This means the KB contains image nodes, Gemini card text nodes, and 2,093
+premium decoupage text nodes. The source visual manifest has 2,094 assets, but
+the Gemini premium run selected 2,093 source hashes. The missing source hash is
+the duplicate `arrival-2016-001` row at
+`shotdeck-batches/batch-2026-05-02/arrival-2016-001.jpg`; the premium run
+indexed the `film-stills/arrival-2016/arrival-2016-001.jpg` asset with the same
+human image id.
 
-## Target Package Shape After The Upgrade
+## Layered Package Shape
 
-After the decoupage ingest patch and the real premium model run, each image
-package must look like this:
+Each indexed image package must look like this:
 
 ```text
 aftersun-2022-001
@@ -143,9 +157,9 @@ aftersun-2022-001
     ├── profile_id:
     │   art_grade_decoupage_vision_analyst.gpt55_port.v1
     ├── provider:
-    │   openai-decoupage
+    │   gemini
     ├── model:
-    │   gpt-5.5 or the approved OpenAI vision reasoning model
+    │   gemini-3.1-pro-preview
     ├── schema:
     │   decoupage_sidecar
     ├── linked_image_file_id:
@@ -173,6 +187,75 @@ aftersun-2022-001
         ├── proactive_adjacencies
         └── opinion
 ```
+
+## Production Decoupage Ingest Artifacts
+
+Source run:
+
+```text
+analysis-cards/decoupage/manifests/visual-decoupage-gemini31-production-20260616-codex
+```
+
+Verified source summary:
+
+```json
+{
+  "provider": "gemini",
+  "api_surface": "Gemini Developer API",
+  "uses_vertex": false,
+  "model": "gemini-3.1-pro-preview",
+  "target_count": 2093,
+  "ok_count": 2093,
+  "error_count": 0,
+  "average_confidence_overall": 0.9031,
+  "threshold": 0.87,
+  "pass": true
+}
+```
+
+Ingest run:
+
+```text
+analysis-cards/decoupage/manifests/visual-decoupage-ingest-20260616-codex
+```
+
+Final artifacts:
+
+```text
+decoupage-promotion-manifest.tsv
+decoupage-promotion-summary.json
+decoupage-ingest-manifest.tsv
+decoupage-ingest-summary.json
+```
+
+Initial live ingest summary:
+
+```json
+{
+  "total_selected": 2093,
+  "embedded": 2093,
+  "skipped_existing": 0,
+  "missing_linked_image": 0,
+  "failed": 0
+}
+```
+
+Latest idempotency validation summary:
+
+```json
+{
+  "total_selected": 2093,
+  "embedded": 0,
+  "skipped_existing": 2093,
+  "missing_linked_image": 0,
+  "failed": 0
+}
+```
+
+The external vault vector index was rebuilt after canonical Markdown promotion.
+It indexes canonical decoupage Markdown paths under
+`analysis-cards/decoupage/markdown/...` and skips run-local decoupage manifest
+outputs by default.
 
 ## Future Ingest Rules
 
@@ -242,15 +325,17 @@ Implemented:
 - OpenAI/Responses provider wrapper;
 - decoupage CLI harness;
 - zero-cost mock smoke for one asset;
-- documentation and tests for the provider/profile.
+- Gemini production decoupage run for 2,093 assets;
+- canonical decoupage JSON/Markdown promotion;
+- decoupage ingest into Chroma as `visual_decoupage_bundle` text nodes;
+- external vault vector index refresh for canonical decoupage Markdown;
+- documentation and tests for the provider/profile and ingest path.
 
 Not implemented yet:
 
 - real OpenAI decoupage run;
-- decoupage ingest into Chroma;
 - dashboard grouped display of all linked layers;
-- full-corpus premium decoupage pass.
+- multi-lens premium decoupage nodes beyond the primary `solo` Gemini layer.
 
-Do not run live model calls, Chroma ingest, delete, clear, or reindex until
-Andre says the system is ready for tests. Andre explicitly said he will notify
-the agent when it is time to run tests.
+Do not run additional live model calls, Chroma delete/clear, or full reindex
+operations unless Andre explicitly opens that gate for the next run.
