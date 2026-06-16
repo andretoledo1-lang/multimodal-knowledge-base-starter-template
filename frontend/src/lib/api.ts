@@ -41,11 +41,73 @@ export interface Item {
 
 export interface ItemsResponse {
   items: Item[];
+  total: number;
+  returned: number;
+  limit: number | null;
+  offset: number;
 }
 
 export interface Stats {
   total: number;
   by_modality: Record<string, number>;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  memory: string;
+  instructions: string;
+  created_at: string;
+  updated_at: string;
+  thread_count: number;
+  latest_thread_at: string | null;
+}
+
+export interface ProjectsResponse {
+  projects: Project[];
+}
+
+export interface ChatThread {
+  id: string;
+  project_id: string;
+  title: string;
+  summary: string;
+  chat_model: string | null;
+  top_k: number | null;
+  archived: boolean;
+  pinned: boolean;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ThreadsResponse {
+  threads: ChatThread[];
+}
+
+export interface PersistedChatMessage {
+  id: string;
+  thread_id: string;
+  role: "user" | "assistant";
+  content: string;
+  chat_model: string | null;
+  top_k: number | null;
+  status: string;
+  visual_attachments: number;
+  citation_validation?: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  sources: SearchResult[];
+}
+
+export interface ThreadDetail extends ChatThread {
+  project: Project;
+  messages: PersistedChatMessage[];
+}
+
+export interface WorkspaceBootstrapResponse {
+  project: Project;
+  thread: ChatThread;
 }
 
 export class ApiError extends Error {
@@ -82,12 +144,107 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  async bootstrapWorkspace(): Promise<WorkspaceBootstrapResponse> {
+    return jsonOrThrow(
+      await fetch("/api/workspace/bootstrap", { method: "POST" }),
+    );
+  },
+
+  async projects(): Promise<ProjectsResponse> {
+    return jsonOrThrow(await fetch("/api/projects"));
+  },
+
+  async createProject(args: { name: string }): Promise<Project> {
+    return jsonOrThrow(
+      await fetch("/api/projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      }),
+    );
+  },
+
+  async updateProject(
+    projectId: string,
+    args: { name?: string; memory?: string; instructions?: string },
+  ): Promise<Project> {
+    return jsonOrThrow(
+      await fetch(`/api/projects/${encodeURIComponent(projectId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      }),
+    );
+  },
+
+  async threads(
+    projectId: string,
+    args?: { include_archived?: boolean },
+  ): Promise<ThreadsResponse> {
+    const params = new URLSearchParams();
+    if (args?.include_archived) params.set("include_archived", "true");
+    const query = params.toString();
+    return jsonOrThrow(
+      await fetch(
+        `/api/projects/${encodeURIComponent(projectId)}/threads${query ? `?${query}` : ""}`,
+      ),
+    );
+  },
+
+  async createThread(args: {
+    project_id: string;
+    title?: string;
+    chat_model?: string | null;
+    top_k?: number | null;
+  }): Promise<ChatThread> {
+    return jsonOrThrow(
+      await fetch("/api/threads", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      }),
+    );
+  },
+
+  async updateThread(
+    threadId: string,
+    args: {
+      title?: string;
+      summary?: string;
+      chat_model?: string | null;
+      top_k?: number | null;
+      archived?: boolean;
+      pinned?: boolean;
+    },
+  ): Promise<ChatThread> {
+    return jsonOrThrow(
+      await fetch(`/api/threads/${encodeURIComponent(threadId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(args),
+      }),
+    );
+  },
+
+  async thread(threadId: string): Promise<ThreadDetail> {
+    return jsonOrThrow(await fetch(`/api/threads/${encodeURIComponent(threadId)}`));
+  },
+
   async stats(): Promise<Stats> {
     return jsonOrThrow(await fetch("/api/stats"));
   },
 
-  async items(): Promise<ItemsResponse> {
-    return jsonOrThrow(await fetch("/api/items"));
+  async items(args?: {
+    limit?: number | null;
+    offset?: number;
+  }): Promise<ItemsResponse> {
+    const params = new URLSearchParams();
+    if (args?.limit != null) params.set("limit", String(args.limit));
+    if (args?.offset != null && args.offset > 0) {
+      params.set("offset", String(args.offset));
+    }
+    const query = params.toString();
+    return jsonOrThrow(await fetch(`/api/items${query ? `?${query}` : ""}`));
   },
 
   async search(args: {

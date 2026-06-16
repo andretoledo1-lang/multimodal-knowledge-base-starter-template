@@ -9,6 +9,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .chat_store import ChatStore
 from .kb import KnowledgeBase
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -44,6 +45,7 @@ class Settings:
     enable_cohere_rerank: bool
     kb_persist_dir: Path
     kb_upload_dir: Path
+    chat_state_db: Path
     kb_collection: str
     cors_origins: list[str]
     log_level: str
@@ -100,6 +102,7 @@ def get_settings() -> Settings:
         enable_cohere_rerank=enable_cohere_rerank,
         kb_persist_dir=_setting_path("KB_PERSIST_DIR", BASE_DIR / "chroma_db"),
         kb_upload_dir=_setting_path("KB_UPLOAD_DIR", BASE_DIR / "uploads"),
+        chat_state_db=_setting_path("CHAT_STATE_DB", BASE_DIR / "app_state" / "chat.sqlite"),
         kb_collection=os.getenv("KB_COLLECTION", "dante_multimodal_kb"),
         cors_origins=[o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()],
         log_level=os.getenv("LOG_LEVEL", "INFO"),
@@ -151,3 +154,10 @@ def get_kb() -> KnowledgeBase:
         cohere_rerank_model=s.cohere_rerank_model,
         enable_rerank=s.enable_cohere_rerank,
     )
+
+
+@lru_cache(maxsize=1)
+def get_chat_store() -> ChatStore:
+    s = get_settings()
+    logger.info("Initialising ChatStore (db=%s)", s.chat_state_db)
+    return ChatStore(s.chat_state_db)

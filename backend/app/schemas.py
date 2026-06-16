@@ -38,6 +38,92 @@ class ChatRequest(BaseModel):
     modality_filter: list[str] | None = None
     max_images: int = Field(default=6, ge=0, le=20)
     chat_model: ChatModelId = CHAT_MODEL_DEEPSEEK
+    project_id: str | None = None
+    thread_id: str | None = None
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(default="Dante", min_length=1, max_length=120)
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    memory: str | None = None
+    instructions: str | None = None
+
+
+class ProjectDTO(BaseModel):
+    id: str
+    name: str
+    memory: str
+    instructions: str
+    created_at: str
+    updated_at: str
+    thread_count: int = 0
+    latest_thread_at: str | None = None
+
+
+class ProjectsResponse(BaseModel):
+    projects: list[ProjectDTO]
+
+
+class ThreadCreateRequest(BaseModel):
+    project_id: str
+    title: str | None = Field(default=None, max_length=160)
+    chat_model: str | None = None
+    top_k: int | None = Field(default=None, ge=1, le=50)
+
+
+class ThreadUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    summary: str | None = None
+    chat_model: str | None = None
+    top_k: int | None = Field(default=None, ge=1, le=50)
+    archived: bool | None = None
+    pinned: bool | None = None
+
+
+class ThreadDTO(BaseModel):
+    id: str
+    project_id: str
+    title: str
+    summary: str
+    chat_model: str | None = None
+    top_k: int | None = None
+    archived: bool = False
+    pinned: bool = False
+    created_at: str
+    updated_at: str
+    message_count: int = 0
+
+
+class ThreadsResponse(BaseModel):
+    threads: list[ThreadDTO]
+
+
+class ChatMessageDTO(BaseModel):
+    id: str
+    thread_id: str
+    role: str
+    content: str
+    chat_model: str | None = None
+    top_k: int | None = None
+    status: str = "complete"
+    visual_attachments: int = 0
+    citation_validation: dict[str, Any] | None = None
+    created_at: str
+    updated_at: str
+    sources: list[SearchResultDTO] = Field(default_factory=list)
+
+
+class ThreadDetailResponse(ThreadDTO):
+    project: ProjectDTO
+    messages: list[ChatMessageDTO]
+
+
+class WorkspaceBootstrapResponse(BaseModel):
+    project: ProjectDTO
+    thread: ThreadDTO
 
 
 class IngestItemDTO(BaseModel):
@@ -116,6 +202,45 @@ def search_result_to_dto(r: SearchResult) -> SearchResultDTO:
         metadata=meta,
         snippet=r.snippet,
         preview_url=preview_url_for(r.metadata),
+    )
+
+
+def project_to_dto(project: dict[str, Any]) -> ProjectDTO:
+    return ProjectDTO(**project)
+
+
+def thread_to_dto(thread: dict[str, Any]) -> ThreadDTO:
+    return ThreadDTO(**thread)
+
+
+def persisted_message_to_dto(message: dict[str, Any]) -> ChatMessageDTO:
+    sources = []
+    for source in message.get("sources") or []:
+        payload = source.get("payload") if isinstance(source, dict) else None
+        if isinstance(payload, dict):
+            sources.append(SearchResultDTO(**payload))
+    return ChatMessageDTO(
+        id=message["id"],
+        thread_id=message["thread_id"],
+        role=message["role"],
+        content=message["content"],
+        chat_model=message.get("chat_model"),
+        top_k=message.get("top_k"),
+        status=message.get("status", "complete"),
+        visual_attachments=message.get("visual_attachments", 0),
+        citation_validation=message.get("citation_validation"),
+        created_at=message["created_at"],
+        updated_at=message["updated_at"],
+        sources=sources,
+    )
+
+
+def thread_detail_to_dto(detail: dict[str, Any]) -> ThreadDetailResponse:
+    thread = thread_to_dto(detail)
+    return ThreadDetailResponse(
+        **thread.model_dump(),
+        project=project_to_dto(detail["project"]),
+        messages=[persisted_message_to_dto(m) for m in detail.get("messages", [])],
     )
 
 

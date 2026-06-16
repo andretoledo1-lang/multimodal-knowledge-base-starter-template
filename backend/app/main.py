@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .deps import get_kb, get_settings
-from .routes import chat, ingest, library, preview, search
+from .routes import chat, chat_state, ingest, library, preview, search, vault_index
 
 logger = logging.getLogger("kb")
 
@@ -54,7 +54,7 @@ async def access_log(request: Request, call_next):
 
 # CORS only if explicitly configured (same-origin prod deploys don't need it).
 # Parse CORS_ORIGINS directly so we don't have to instantiate Settings at
-# import time (which would crash without GEMINI_API_KEY); lifespan still
+# import time (which would crash without provider keys); lifespan still
 # surfaces that error cleanly when the app actually starts.
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
 if _cors_origins:
@@ -70,8 +70,10 @@ if _cors_origins:
 app.include_router(ingest.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(chat_state.router, prefix="/api")
 app.include_router(library.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")
+app.include_router(vault_index.router, prefix="/api")
 
 
 # Static SPA mount for prod. In dev this directory doesn't exist, so we skip.

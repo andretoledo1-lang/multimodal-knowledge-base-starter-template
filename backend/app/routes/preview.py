@@ -13,6 +13,9 @@ from ..kb import KnowledgeBase, load_video_frame_at, render_pdf_page
 
 router = APIRouter(tags=["preview"])
 logger = logging.getLogger("kb.preview")
+EXTRA_PREVIEW_ROOTS = [
+    Path("/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/visual-reference-assets/source-assets"),
+]
 
 
 def _lookup_file(kb: KnowledgeBase, file_id: str) -> tuple[Path, dict]:
@@ -30,9 +33,9 @@ def _lookup_file(kb: KnowledgeBase, file_id: str) -> tuple[Path, dict]:
     if not fp:
         raise HTTPException(status_code=404, detail="Item has no file path")
     path = Path(fp).resolve()
-    upload_root = kb.upload_dir.resolve()
-    if not path.is_relative_to(upload_root):
-        logger.warning("Refusing to serve %s — outside upload_dir %s", path, upload_root)
+    allowed_roots = [kb.upload_dir.resolve(), *[root.resolve() for root in EXTRA_PREVIEW_ROOTS]]
+    if not any(path.is_relative_to(root) for root in allowed_roots):
+        logger.warning("Refusing to serve %s — outside preview roots %s", path, allowed_roots)
         raise HTTPException(status_code=404, detail="File not available")
     if not path.exists():
         raise HTTPException(status_code=410, detail="File no longer on disk")

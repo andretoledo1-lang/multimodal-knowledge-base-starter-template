@@ -76,6 +76,16 @@ def build_grounded_context(
     return "\n".join(context_lines).strip(), descriptions, visual_count
 
 
+def _conversation_context_block(conversation_context: str | None) -> str:
+    if not conversation_context or not conversation_context.strip():
+        return ""
+    return (
+        "Conversation context from this project/thread. Use it for continuity, "
+        "but ground factual claims in the retrieved sources below:\n"
+        f"{conversation_context.strip()[:6000]}\n\n"
+    )
+
+
 def answer_with_vision(
     kb: KnowledgeBase,
     question: str,
@@ -84,6 +94,7 @@ def answer_with_vision(
     modality_filter: list[str] | None = None,
     chat_model: ChatModelId = DEFAULT_CHAT_MODEL,
     max_images: int = 6,
+    conversation_context: str | None = None,
     on_progress=None,
 ) -> Iterator[GroundedAnswer | str]:
     """
@@ -129,6 +140,7 @@ def answer_with_vision(
             source_context=source_context,
             source_lines=source_lines,
             visual_count=visual_count,
+            conversation_context=conversation_context,
             on_progress=on_progress,
         )
         return
@@ -138,6 +150,7 @@ def answer_with_vision(
     sources_block = "\n".join(source_lines)
     user_prompt = (
         f"Question: {question}\n\n"
+        f"{_conversation_context_block(conversation_context)}"
         f"Retrieved sources:\n{sources_block}\n\n"
         f"Source context:\n{source_context}\n\n"
         f"Answer now."
@@ -174,6 +187,7 @@ def _answer_with_claude_premium(
     source_context: str,
     source_lines: list[str],
     visual_count: int,
+    conversation_context: str | None,
     on_progress,
 ) -> Iterator[GroundedAnswer | str]:
     profile = get_chat_profile(CHAT_MODEL_CLAUDE_OPUS)
@@ -192,6 +206,7 @@ def _answer_with_claude_premium(
         question=question,
         sources_block=sources_block,
         source_context=source_context,
+        conversation_context=conversation_context,
     )
     logger.info(
         "claude_premium dispatch decision=%s plan_items=%d",
@@ -207,6 +222,7 @@ def _answer_with_claude_premium(
                 question=question,
                 sources_block=sources_block,
                 source_context=source_context,
+                conversation_context=conversation_context,
                 plan=dispatch.get("plan") if isinstance(dispatch.get("plan"), list) else [],
             )
         except Exception:
@@ -221,6 +237,7 @@ def _answer_with_claude_premium(
         question=question,
         sources_block=sources_block,
         source_context=source_context,
+        conversation_context=conversation_context,
         worker_results=worker_results,
         revision_notes=[],
     )
@@ -232,6 +249,7 @@ def _answer_with_claude_premium(
             question=question,
             sources_block=sources_block,
             source_context=source_context,
+            conversation_context=conversation_context,
             answer=answer,
             iteration=iteration,
         )
@@ -250,6 +268,7 @@ def _answer_with_claude_premium(
             question=question,
             sources_block=sources_block,
             source_context=source_context,
+            conversation_context=conversation_context,
             worker_results=worker_results,
             revision_notes=judge.revision_notes,
         )
@@ -272,6 +291,7 @@ def _run_opus_dispatch(
     question: str,
     sources_block: str,
     source_context: str,
+    conversation_context: str | None,
 ) -> dict[str, Any]:
     prompt = (
         "Mode: dispatch_planning\n"
@@ -279,6 +299,7 @@ def _run_opus_dispatch(
         "Allowed decision values: no_dispatch, dispatch.\n"
         "Allowed helper values inside plan: worker, chief.\n\n"
         f"Question: {question}\n\n"
+        f"{_conversation_context_block(conversation_context)}"
         f"Retrieved sources:\n{sources_block}\n\n"
         f"Source context:\n{source_context}\n"
     )
@@ -312,6 +333,7 @@ def _run_premium_helpers(
     question: str,
     sources_block: str,
     source_context: str,
+    conversation_context: str | None,
     plan: list[object],
 ) -> list[WorkerResult]:
     results: list[WorkerResult] = []
@@ -334,6 +356,7 @@ def _run_premium_helpers(
             "Return only the internal JSON object requested by your role.\n\n"
             f"Assigned subtask: {assigned}\n\n"
             f"Question: {question}\n\n"
+            f"{_conversation_context_block(conversation_context)}"
             f"Retrieved sources:\n{sources_block}\n\n"
             f"Source context:\n{source_context}\n"
         )
@@ -357,6 +380,7 @@ def _run_opus_final_answer(
     question: str,
     sources_block: str,
     source_context: str,
+    conversation_context: str | None,
     worker_results: list[WorkerResult],
     revision_notes: list[str],
 ) -> str:
@@ -376,6 +400,7 @@ def _run_opus_final_answer(
         "Mode: final_answer\n"
         "Return only the final user-facing answer. Cite source numbers like [1].\n\n"
         f"Question: {question}\n\n"
+        f"{_conversation_context_block(conversation_context)}"
         f"Retrieved sources:\n{sources_block}\n\n"
         f"Source context:\n{source_context}"
         f"{worker_block}"
@@ -403,6 +428,7 @@ def _run_opus_judge(
     question: str,
     sources_block: str,
     source_context: str,
+    conversation_context: str | None,
     answer: str,
     iteration: int,
 ) -> JudgeResult | None:
@@ -412,6 +438,7 @@ def _run_opus_judge(
         "Evaluate only the question, source cards, and candidate answer below.\n\n"
         f"Iteration: {iteration}\n\n"
         f"Question: {question}\n\n"
+        f"{_conversation_context_block(conversation_context)}"
         f"Retrieved sources:\n{sources_block}\n\n"
         f"Source context:\n{source_context}\n\n"
         f"Candidate answer:\n{answer}\n"
