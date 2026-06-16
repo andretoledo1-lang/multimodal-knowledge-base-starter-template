@@ -198,7 +198,8 @@ export function useChatWorkspace() {
       setSelectedThreadId(null);
     },
     selectThread: (thread: ChatThread) => setSelectedThreadId(thread.id),
-    createProject: (name: string) => createProject.mutate(name),
+    createProject: (name: string, options?: { onSuccess?: () => void }) =>
+      createProject.mutate(name, { onSuccess: options?.onSuccess }),
     createThread: (chatModel?: string, topK?: number) => {
       const projectId = selectedProjectId;
       if (!projectId) return;

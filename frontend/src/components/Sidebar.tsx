@@ -16,8 +16,10 @@ import {
   Save,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -42,6 +44,8 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
   const ingest = useIngest();
   const fileInput = useRef<HTMLInputElement>(null);
   const [memoryDraft, setMemoryDraft] = useState("");
+  const [isAddingProject, setIsAddingProject] = useState(false);
+  const [newProjectName, setNewProjectName] = useState("");
   const sidebarStyle = {
     "--sidebar-width": `${width}px`,
   } as CSSProperties;
@@ -55,9 +59,28 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
     setMemoryDraft(workspace.selectedProject?.memory ?? "");
   }, [workspace.selectedProject?.id, workspace.selectedProject?.memory]);
 
+  const defaultProjectName = () => `Project ${workspace.projects.length + 1}`;
+
   const onCreateProject = () => {
-    const name = window.prompt("Project name", "New project")?.trim();
-    if (name) workspace.createProject(name);
+    setNewProjectName(defaultProjectName());
+    setIsAddingProject(true);
+  };
+
+  const onCancelProjectCreation = () => {
+    if (workspace.isCreatingProject) return;
+    setNewProjectName("");
+    setIsAddingProject(false);
+  };
+
+  const onSubmitProjectCreation = () => {
+    if (workspace.isCreatingProject) return;
+    const name = newProjectName.trim() || defaultProjectName();
+    workspace.createProject(name, {
+      onSuccess: () => {
+        setNewProjectName("");
+        setIsAddingProject(false);
+      },
+    });
   };
 
   const onRenameProject = () => {
@@ -107,7 +130,9 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
               size="icon"
               className="h-7 w-7"
               onClick={onCreateProject}
-              disabled={workspace.isCreatingProject}
+              disabled={
+                workspace.isLoading || workspace.isCreatingProject || isAddingProject
+              }
               aria-label="New project"
             >
               {workspace.isCreatingProject ? (
@@ -117,6 +142,52 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
               )}
             </Button>
           </div>
+          {isAddingProject && (
+            <div className="mb-2 flex items-center gap-1 rounded-md border border-primary/35 bg-background/60 p-1">
+              <Input
+                autoFocus
+                value={newProjectName}
+                onChange={(event) => setNewProjectName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    onSubmitProjectCreation();
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    onCancelProjectCreation();
+                  }
+                }}
+                placeholder="Project name"
+                className="h-7 min-w-0 flex-1 px-2 text-xs"
+                aria-label="Project name"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                onClick={onSubmitProjectCreation}
+                disabled={workspace.isCreatingProject}
+                aria-label="Create project"
+              >
+                {workspace.isCreatingProject ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Save className="h-3.5 w-3.5" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                onClick={onCancelProjectCreation}
+                disabled={workspace.isCreatingProject}
+                aria-label="Cancel project creation"
+              >
+                <X className="h-3.5 w-3.5" />
+              </Button>
+            </div>
+          )}
           <div className="flex max-h-28 flex-col gap-1 overflow-y-auto pr-1">
             {workspace.projects.length === 0 && workspace.isLoading ? (
               <>
