@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.chat_eval import QUALITY_GATE, compare_model_scores, score_answer
+from app.chat_eval import QUALITY_GATE, compare_model_scores, score_answer, score_voice
 
 
 def test_score_answer_passes_quality_gate_for_grounded_answer() -> None:
@@ -51,3 +51,19 @@ def test_compare_model_scores_reports_tie_and_winner() -> None:
     )
     assert winner.winner == "codex-gpt-5.5-oauth"
     assert winner.delta == 0.1
+
+
+def test_score_voice_flags_dash_separators_and_ai_tells() -> None:
+    scores = score_voice(
+        "Great question. It's important to note that the dashboard is grounded — and concise [1]. "
+        "This part uses an en dash – as a separator."
+    )
+    assert scores.em_dash_count == 1
+    assert scores.en_dash_separator_count == 1
+    assert scores.ai_tell_count == 2
+    assert not scores.voice_clean
+
+
+def test_score_voice_allows_clean_grounded_answer() -> None:
+    scores = score_voice("The dashboard grounds answers in retrieved cards, then cites the card numbers [1].")
+    assert scores.voice_clean

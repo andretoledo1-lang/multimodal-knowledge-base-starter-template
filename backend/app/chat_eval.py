@@ -1,11 +1,30 @@
 """Deterministic quality/reliability scoring for DanteDash chat evals."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from .citations import CitationValidation, validate_citations
 
 QUALITY_GATE = 0.78
+AI_TELL_PATTERNS: tuple[str, ...] = (
+    "it's important to note",
+    "it is important to note",
+    "furthermore",
+    "moreover",
+    "as an ai",
+    "in conclusion",
+    "i'd be happy to",
+    "i would be happy to",
+    "certainly!",
+    "great question",
+    "delve",
+    "rest assured",
+    "let's explore",
+    "let us explore",
+    "it should be noted",
+    "notably,",
+)
 
 
 @dataclass(frozen=True)
@@ -53,6 +72,27 @@ class EvalScores:
             "worker_contract_score": self.worker_contract_score,
             "latency_reliability_score": self.latency_reliability_score,
             "citation_validation": self.citation_validation.to_payload(),
+        }
+
+
+@dataclass(frozen=True)
+class VoiceScores:
+    em_dash_count: int
+    en_dash_separator_count: int
+    ai_tell_count: int
+    ai_tell_hits: tuple[str, ...]
+
+    @property
+    def voice_clean(self) -> bool:
+        return self.em_dash_count == 0 and self.en_dash_separator_count == 0 and self.ai_tell_count == 0
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "em_dash_count": self.em_dash_count,
+            "en_dash_separator_count": self.en_dash_separator_count,
+            "ai_tell_count": self.ai_tell_count,
+            "ai_tell_hits": list(self.ai_tell_hits),
+            "voice_clean": self.voice_clean,
         }
 
 
@@ -110,6 +150,24 @@ def score_answer(
         latency_reliability_score=1.0 if latency_ok else 0.0,
         citation_validation=citation_validation,
     )
+
+
+def score_voice(answer: str) -> VoiceScores:
+    """Score deterministic voice hygiene for a user-facing answer."""
+    lowered = answer.lower()
+    hits = tuple(pattern for pattern in AI_TELL_PATTERNS if pattern in lowered)
+    return VoiceScores(
+        em_dash_count=answer.count("\u2014"),
+        en_dash_separator_count=_en_dash_separator_count(answer),
+        ai_tell_count=len(hits),
+        ai_tell_hits=hits,
+    )
+
+
+def _en_dash_separator_count(answer: str) -> int:
+    # Count en dashes used like sentence separators. Numeric ranges such as
+    # 3-5 or page labels should not match because they lack spaces.
+    return len(re.findall(r"\s\u2013\s", answer))
 
 
 def compare_model_scores(

@@ -22,6 +22,8 @@ def test_principal_prompt_bundles_load_for_active_models() -> None:
         assert "Evidence Sufficiency" in bundle.system_prompt
         assert "Provider Isolation" in bundle.system_prompt
         assert "Internal Visibility" in bundle.system_prompt
+        assert "Voice" in bundle.system_prompt
+        assert "policies/voice.md" in bundle.assets
 
 
 def test_worker_prompt_bundles_are_hidden_and_structured() -> None:
@@ -30,6 +32,7 @@ def test_worker_prompt_bundles_are_hidden_and_structured() -> None:
         assert bundle.visibility == "worker"
         assert "not user-facing" in bundle.system_prompt
         assert "Return only a JSON object" in bundle.system_prompt
+        assert "policies/voice.md" not in bundle.assets
 
 
 def test_anthropic_prompt_ids_are_runtime_registered_with_expected_roles() -> None:
@@ -45,6 +48,9 @@ def test_anthropic_prompt_ids_are_runtime_registered_with_expected_roles() -> No
     assert chief.visibility == "chief"
     assert judge.visibility == "judge"
     assert "Return only a JSON object" in judge.system_prompt
+    assert "policies/voice.md" not in worker.assets
+    assert "policies/voice.md" not in chief.assets
+    assert "policies/voice.md" not in judge.assets
 
 
 def test_user_facing_prompt_bundles_do_not_leak_provider_model_names() -> None:
@@ -60,3 +66,10 @@ def test_user_facing_prompt_bundles_do_not_leak_provider_model_names() -> None:
         assert "opus" not in lowered
         assert "sonnet" not in lowered
         assert "haiku" not in lowered
+
+
+def test_voice_policy_is_guard_clean() -> None:
+    bundle = get_prompt_bundle_for_chat_model(CHAT_MODEL_DEEPSEEK)
+    voice_asset = [asset for asset in bundle.assets if asset == "policies/voice.md"]
+    assert voice_asset == ["policies/voice.md"]
+    assert "\u2014" not in bundle.system_prompt
