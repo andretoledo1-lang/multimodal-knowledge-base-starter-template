@@ -17,7 +17,7 @@ Design grounded in a researched per-provider authoring SPEC (DeepSeek v4, OpenAI
 - **Runtime contract:** behavior the backend/orchestrator must enforce before these prompts are promoted.
 - **Provider config notes:** model ids, effort/thinking settings, structured-output mechanisms, and other provider parameters that must be verified against the live CLI/API before implementation.
 
-Current guarantees by provider: the backend owns retrieval and source-card construction, and the UI receives the final source payload from the backend. The non-Anthropic runtime (DeepSeek `deepseek-v4-pro` and OpenAI `gpt-5.5`) is implemented and the round reports passing live smoke plus eval/A-B at score 1.0 against a 0.78 gate, including a prompt registry and `[n]` citation parsing/validation (see `backend/app/`). The Anthropic/Claude modes (Sonnet, Opus Premium, Haiku workers, chief, judge) are docs-only in this round: the prompts below are the design source for that next promotion, and worker/judge schema enforcement, the judge clean-context contract, and empty tool surfaces still must be implemented or verified for the Claude path before it is treated as operational.
+Current guarantees by provider: the backend owns retrieval and source-card construction, and the UI receives the final source payload from the backend. The chat runtime now registers DeepSeek `deepseek-v4-pro`, OpenAI/Codex `gpt-5.5`, Claude Sonnet `claude-sonnet-4-6`, and Claude Opus Premium `claude-opus-4-8` modes. The runtime includes a prompt registry, `[n]` citation parsing/validation, app-side worker/judge schema validation, clean-context judging for Premium, and a deterministic 0.78 eval gate (see `backend/app/`). The Claude OAuth path is operational through the local Claude CLI, with the caveat that Sonnet live smoke and A/B were temporarily blocked by provider rate limit during validation; Opus Premium passed live smoke with valid citations.
 
 Authoring principle: static-first, volatile-last. Each future runtime system message should keep static blocks as a stable cache prefix; source cards and the user question are the volatile tail. Never interpolate timestamps, request ids, or usernames into the static part.
 
@@ -39,14 +39,14 @@ Each prompt is a template with `{{PLACEHOLDERS}}`. The future backend prompt loa
 {{OUTPUT_ANCHOR}}                per-prompt; optional recency line (Prompt 1 only, long cards; omitted for GPT-5.5)
 ```
 
-Per-mode assembly and params. The DeepSeek and GPT-5.5 rows are verified against the live runtime (smoke + eval); the Claude rows are candidate notes to re-check against the installed OAuth path before shipping:
+Per-mode assembly and params. DeepSeek, GPT-5.5, and Opus Premium rows are verified against the live runtime. Sonnet model/CLI auth were verified with minimal calls, but full live chat smoke was blocked by provider rate limit and should be re-run when quota clears:
 
 | Visible mode | Principal (system message = Role + Block 0 + Task + A + B + D) | Principal params | Hidden internal calls (same provider) |
 |---|---|---|---|
 | `deepseek - deepseek-v4-pro` | Prompt 1 | `deepseek-v4-pro` verified (live smoke); `reasoning_effort="high"` + `thinking` via `extra_body` | optional DeepSeek `v4-flash` worker (Block C), thinking off |
 | `openai/codex - gpt-5.5 OAuth` | Prompt 2 | `gpt-5.5` verified (live smoke); developer/instructions carrier, reasoning + verbosity settings | `gpt-5.4-mini` worker (Prompt 3 + Block C), strict json_schema |
-| `claude - sonnet-4.6 OAuth` | Prompt 4 | verify `claude-sonnet-4-6`, system carrier, effort settings | verify `claude-haiku-4-5` worker (Prompt 5 + Block C) and structured-output support |
-| `claude - opus-4.8 OAuth Premium` | Prompt 6 | verify `claude-opus-4-8`, thinking/effort settings, max tokens | verify Sonnet chief (Prompt 7), Haiku worker (Prompt 8), Opus judge (Prompt 9), and repair loop cap |
+| `claude - sonnet-4.6 OAuth` | Prompt 4 | `claude-sonnet-4-6`, Claude CLI `--system-prompt`, `effort=medium`; re-run full smoke after rate-limit clears | optional `claude-haiku-4-5` worker (Prompt 5 + Block C), app-side schema validation |
+| `claude - opus-4.8 OAuth Premium` | Prompt 6 | `claude-opus-4-8`, Claude.ai OAuth `effort=high`; `xhigh`/`max` are API or plan-specific ideals, not valid on this subscriber path | Sonnet chief (Prompt 7), Haiku worker (Prompt 8), Opus judge (Prompt 9), repair cap 1, app-side validation |
 
 > Provider-isolation reminder, encoded in the table: a mode's hidden calls are ALL the same provider as its principal. The Opus judge and the Sonnet/Haiku workers exist ONLY in the Anthropic Premium mode. Never route an Opus judge over an OpenAI or DeepSeek answer.
 
@@ -153,13 +153,13 @@ Schema rules: `source_id` is the only citable key. Extract `supporting_quotes` b
 
 ```text
 VOICE
-Write like a knowledgeable colleague talking to one person: clear, direct, warm, plain sentences. Lead with the answer, then the support. Use commas, parentheses, or two short sentences where you might reach for a long dash. Connect ideas with ordinary words (so, but, and, which). Favor concrete nouns and active verbs. Skip throat-clearing ("It's important to note", "Furthermore", "As an AI"). When the material is thin, say so honestly and conversationally. One assistant, one voice.
+Write like a knowledgeable colleague talking to one person: clear, direct, warm, plain sentences. Lead with the answer, then the support. Use commas, parentheses, or two short sentences where you might reach for a long dash. Do not use the em-dash character U+2014, and do not use an en-dash as a sentence separator. Connect ideas with ordinary words (so, but, and, which). Favor concrete nouns and active verbs. Skip high-signal AI-tells ("It's important to note", "Furthermore", "As an AI", "based on the provided sources", "I hope this helps", "I'm sorry", "I apologize"). When the material is thin, say so honestly and conversationally. One assistant, one voice.
 
 Example of the target voice:
 "The 2019 redesign cut load time by about 40 percent [2], mostly by deferring the hero video [5]. It did not touch checkout, so the cart-abandonment number you asked about is not covered here."
 ```
 
-> Block D is user-facing only. Workers, the chief, and the judge have no voice: they emit the schema object and nothing else.
+> Block D is implemented as `backend/app/chat_prompts/policies/voice.md` and is user-facing only. Workers, the chief, and the judge have no voice: they emit the schema object and nothing else. No-leak and provider-isolation rules live in their own shared policies; the Voice block should stay focused on style and partial-evidence phrasing.
 
 ---
 
@@ -258,9 +258,9 @@ A direct answer with inline [n] citations after each supported claim. Use a shor
 (The backend places the source cards in <source_cards>...</source_cards>, the question in <question>...</question>, and any condensed worker findings in <worker_findings>...</worker_findings> in the user turn, then expects your answer.)
 ```
 
-## Prompt 6: Claude Opus Premium principal and orchestrator (`claude-opus-4-8 OAuth, effort=xhigh`)
+## Prompt 6: Claude Opus Premium principal and orchestrator (`claude-opus-4-8 OAuth, effort=high on Claude.ai subscriber path`)
 
-Candidate params to verify before implementation: `claude-opus-4-8`, `thinking={"type":"adaptive"}`, `output_config={"effort":"xhigh"}`, and a large `max_tokens` budget. Do not treat these as verified until the installed Claude/OAuth runtime accepts them. The Opus principal can act as premium orchestrator, but the backend must call it in one explicit mode at a time: `dispatch_planning` or `final_answer`. Sonnet chief, Haiku workers, and Opus judge are separate backend calls when implemented.
+Runtime params: `claude-opus-4-8` through the local Claude OAuth CLI with `effort=high`, empty tools, and no `budget_tokens`. The Claude.ai subscriber path rejected `xhigh` and `max`; keep `xhigh` as an API/provider-config ideal only where that path explicitly supports it. The Opus principal can act as premium orchestrator, but the backend must call it in one explicit mode at a time: `dispatch_planning` or `final_answer`. Sonnet chief, Haiku workers, and Opus judge are separate backend calls.
 
 ```text
 # Role
@@ -282,7 +282,7 @@ The backend invokes you with exactly one mode:
 
 # Output
 - In `dispatch_planning` mode: return only this compact JSON object and nothing else:
-  `{"mode":"dispatch_planning","decision":"no_dispatch"|"dispatch","reason":"<short>","plan":[{"cluster":"<scope>","helper":"haiku"|"sonnet_chief","extract":"<what to pull>"}]}`
+  `{"mode":"dispatch_planning","decision":"no_dispatch"|"dispatch","reason":"<short>","plan":[{"cluster":"<scope>","helper":"worker"|"chief","extract":"<what to pull>"}]}`
   Include `plan` only when `decision` is `dispatch`. This is internal backend material: it is never streamed or shown to the user.
 - In `final_answer` mode: return only a direct answer with inline [n] citations after each supported claim. No preamble, no mention of helpers, planning, judging, or how the answer was assembled.
 
@@ -381,7 +381,7 @@ Return only the worker schema object. No prose, no preamble, no personality.
 
 ## Prompt 9: Claude Opus judge (`claude-opus-4-8 OAuth`, Premium mode)
 
-Candidate params to verify before implementation: `claude-opus-4-8`, `effort=medium`, and structured output support. Do not assume max effort is better for the judge; validate with evals before increasing it. Clean context is a runtime contract: the judge should see the task spec, the rubric, source cards, and the answer to grade, not the worker transcript or the orchestrator's planning. Runtime should pass an empty tool surface when provider support allows it.
+Runtime params: `claude-opus-4-8`, `effort=medium`, empty tools, app-side schema validation, and backend normalization of small payload variations. Do not assume max effort is better for the judge; validate with evals before increasing it. Clean context is a runtime contract: the judge sees the task spec, the rubric, source cards, and the answer to grade, not the worker transcript or the orchestrator's planning.
 
 ```text
 # Role
@@ -402,9 +402,9 @@ Grade this answer on its own merits. You do not see prior verdicts, earlier draf
 {{JUDGE_SCHEMA}}
 
 # Output
-Return only the judge schema object. No prose to the user, ever.
+Return only the judge schema object. Use lowercase `pass` or `fail` for `verdict`. Always return `revision_notes` as an array, even when it is empty. No prose to the user, ever.
 
-(The backend supplies the question, source cards, and candidate answer in the user turn, on a clean context with no prior verdicts or worker transcript, and caps repair iterations at 1-2.)
+(The backend supplies the question, source cards, and candidate answer in the user turn, on a clean context with no prior verdicts or worker transcript, sets/normalizes iteration, normalizes minor casing/type drift, and caps repair iterations at 1-2.)
 ```
 
 ---
@@ -413,16 +413,17 @@ Return only the judge schema object. No prose to the user, ever.
 
 ## Current vs Planned Guarantees
 
-Implemented (non-Anthropic round):
+Implemented:
 - The backend retrieves source candidates, builds text source cards, runs the selected chat client through a prompt registry, streams text, and emits a final `sources` SSE payload for the UI.
-- `[n]` citation parsing and invalid-citation rejection/repair exist for the DeepSeek and GPT-5.5 paths (`backend/app/citations.py`), with a smoke and eval/A-B harness and a 0.78 quality gate (`backend/app/chat_eval.py`; the round reports both providers at score 1.0).
-- DeepSeek `deepseek-v4-pro` and OpenAI `gpt-5.5` model ids and params are verified against the live runtime.
+- `[n]` citation parsing and validation exist for the active chat paths (`backend/app/citations.py`), with smoke and eval/A-B harnesses and a 0.78 quality gate (`backend/app/chat_eval.py`).
+- DeepSeek `deepseek-v4-pro`, OpenAI `gpt-5.5`, and Claude Opus Premium are verified against the live runtime. Claude Sonnet model/auth verified with minimal CLI calls; full chat smoke and Voice A/B need a re-run after rate limit clears.
+- `voice.md` is a runtime policy for user-facing principals only, with deterministic Voice A/B metrics for em-dash, en-dash separator, hard AI-tells, and soft warning flags.
+- Claude Opus Premium enforces same-provider routing, app-side worker/judge validation, clean judge context, bounded repair, and empty Claude CLI tool surfaces.
 
-Planned before the Claude promotion:
-- Extend the registry, `[n]` citation validation, and eval harness to the Anthropic/Claude modes (the eval cases are non-Anthropic only today).
-- Run the hidden Sonnet chief, Haiku workers, and Opus judge, and enforce worker/chief/judge structured-output schemas through provider-native structured output where verified, or through app-side validation.
-- Enforce provider isolation, bounded worker fan-out, clean judge context, and empty tool surfaces at the runtime layer for the Claude path, not only in prompt prose.
-- Verify Claude OAuth model ids and params (Sonnet/Opus/Haiku effort, Opus adaptive thinking) against the installed runtime before pinning.
+Planned follow-ups:
+- Re-run Sonnet live smoke and Voice A/B once the Claude OAuth rate limit clears.
+- Gate Premium dispatch/judge to reduce latency on small, clear card sets.
+- Consider provider-native structured output only if the OAuth path proves reliable and cheaper than app-side validation; app-side validation remains mandatory.
 
 ## Degradation and failure handling
 
@@ -436,9 +437,9 @@ Hard constraint: degrade within the same provider, never across providers. The o
 
 **Empty tool surface.** Runtime should pass no tools or an equivalent empty tool surface whenever the provider interface supports it. The Cardinal Invariants are the prose belt; runtime routing/tool configuration is the lock. Provider isolation is enforced by routing, not by the prompt.
 
-**Structured output mechanism per provider.** OpenAI workers use Responses API structured output with strict JSON schema (`text.format={type:"json_schema", strict:true}`). Strict mode requires every property in `required`, `additionalProperties:false`, and no truly-optional fields, so model the conditional fields (`reason`, `query_used`, and each `media_handles` entry's `page`/`timestamp_range`/`figure_id`) as nullable types rather than omitting them. Anthropic workers, chief, and judge use the verified structured-output mechanism for the installed Claude/OAuth path (typically a forced tool call whose `input_schema` is the worker or judge schema); verify this is available on the OAuth path before promotion. DeepSeek workers use JSON mode only: `response_format={"type":"json_object"}`, the literal word "json" plus a pasted schema example in the prompt, and a generous `max_tokens` (no first-party strict schema exists, verified 2026-06-15); retry on the occasional empty content. In all cases, app-side validation remains required before worker/judge artifacts are trusted.
+**Structured output mechanism per provider.** OpenAI workers use Responses API structured output with strict JSON schema (`text.format={type:"json_schema", strict:true}`). Strict mode requires every property in `required`, `additionalProperties:false`, and no truly-optional fields, so model the conditional fields (`reason`, `query_used`, and each `media_handles` entry's `page`/`timestamp_range`/`figure_id`) as nullable types rather than omitting them. Claude OAuth workers, chief, and judge currently use prompt-shaped JSON plus app-side parsing, validation, and normalization; native structured output can be revisited only if the OAuth path proves reliable for this use case. DeepSeek workers use JSON mode only: `response_format={"type":"json_object"}`, the literal word "json" plus a pasted schema example in the prompt, and a generous `max_tokens` (no first-party strict schema exists, verified 2026-06-15); retry on the occasional empty content. In all cases, app-side validation remains required before worker/judge artifacts are trusted.
 
-**Reasoning and effort floors (cheaper and usually better than max-everywhere).** Candidate defaults to verify with evals: DeepSeek principal high and worker thinking off; OpenAI principal low with possible medium escalation and worker minimal reasoning; Claude Sonnet medium, Opus principal high/xhigh equivalent, judge medium, Haiku low. Raising effort on a bounded grounded task can overthink or add cost, so treat increases as eval-driven.
+**Reasoning and effort floors (cheaper and usually better than max-everywhere).** Runtime defaults: DeepSeek principal high and worker thinking off; OpenAI/Codex principal `xhigh` where the local OAuth runtime accepts it and worker minimal reasoning; Claude Sonnet medium; Claude Opus principal high on the Claude.ai OAuth subscriber path; judge medium; Haiku low. `xhigh`/`max` remain API/provider-specific ideals only where verified. Raising effort on a bounded grounded task can overthink or add cost, so treat increases as eval-driven.
 
 **DeepSeek version (verified 2026-06-15 against `api-docs.deepseek.com`).** `deepseek-v4-pro` and `deepseek-v4-flash` are the live ids (1M context, 384K max output). The legacy `deepseek-chat`/`deepseek-reasoner` aliases retire 2026-07-24 15:59 UTC. Thinking mode is real and default-on; the official example passes `reasoning_effort="high"` (also accepts `"max"`) with `thinking` carried in `extra_body` via the OpenAI SDK, and the final answer is read from `message.content` (the chain of thought is `reasoning_content`, which must not be fed back into messages or it 400s). In thinking mode, temperature and the penalties are ignored. There is no first-party strict json-schema: JSON output is `response_format={"type":"json_object"}` only, needs the literal word "json" plus a pasted example, and can occasionally return empty content, so the DeepSeek worker stays on json_object plus app-side validation and retry, as specced. The non-Anthropic runtime round reports passing live smoke with these settings.
 

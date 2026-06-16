@@ -61,9 +61,31 @@ def test_score_voice_flags_dash_separators_and_ai_tells() -> None:
     assert scores.em_dash_count == 1
     assert scores.en_dash_separator_count == 1
     assert scores.ai_tell_count == 2
+    assert not scores.has_soft_warnings
     assert not scores.voice_clean
 
 
 def test_score_voice_allows_clean_grounded_answer() -> None:
     scores = score_voice("The dashboard grounds answers in retrieved cards, then cites the card numbers [1].")
     assert scores.voice_clean
+    assert not scores.has_soft_warnings
+
+
+def test_score_voice_counts_over_apology_as_hard_ai_tell() -> None:
+    scores = score_voice("I'm sorry, based on the provided sources, the answer is not covered [1].")
+    assert scores.ai_tell_count == 2
+    assert not scores.voice_clean
+
+
+def test_score_voice_reports_soft_bullet_dump_and_throat_clearing() -> None:
+    scores = score_voice(
+        "Here is the answer.\n"
+        "- One grounded point [1]\n"
+        "- Another grounded point [1]\n"
+        "- A third grounded point [1]\n"
+        "- A fourth grounded point [1]\n"
+    )
+    assert scores.voice_clean
+    assert scores.bullet_dump_count == 1
+    assert scores.throat_clearing_count == 1
+    assert scores.has_soft_warnings

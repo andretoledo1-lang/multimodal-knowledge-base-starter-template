@@ -24,6 +24,25 @@ AI_TELL_PATTERNS: tuple[str, ...] = (
     "let us explore",
     "it should be noted",
     "notably,",
+    "based on the provided sources",
+    "based on the sources",
+    "the provided cards",
+    "i hope this helps",
+    "in summary",
+    "it's worth noting",
+    "it is worth noting",
+    "i apologize",
+    "i'm sorry",
+)
+THROAT_CLEARING_PREFIXES: tuple[str, ...] = (
+    "to answer your question",
+    "here's",
+    "here is",
+    "let me",
+    "i'll",
+    "i will",
+    "the following",
+    "based on",
 )
 
 
@@ -81,10 +100,16 @@ class VoiceScores:
     en_dash_separator_count: int
     ai_tell_count: int
     ai_tell_hits: tuple[str, ...]
+    bullet_dump_count: int = 0
+    throat_clearing_count: int = 0
 
     @property
     def voice_clean(self) -> bool:
         return self.em_dash_count == 0 and self.en_dash_separator_count == 0 and self.ai_tell_count == 0
+
+    @property
+    def has_soft_warnings(self) -> bool:
+        return self.bullet_dump_count > 0 or self.throat_clearing_count > 0
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -92,6 +117,9 @@ class VoiceScores:
             "en_dash_separator_count": self.en_dash_separator_count,
             "ai_tell_count": self.ai_tell_count,
             "ai_tell_hits": list(self.ai_tell_hits),
+            "bullet_dump_count": self.bullet_dump_count,
+            "throat_clearing_count": self.throat_clearing_count,
+            "has_soft_warnings": self.has_soft_warnings,
             "voice_clean": self.voice_clean,
         }
 
@@ -161,6 +189,8 @@ def score_voice(answer: str) -> VoiceScores:
         en_dash_separator_count=_en_dash_separator_count(answer),
         ai_tell_count=len(hits),
         ai_tell_hits=hits,
+        bullet_dump_count=_bullet_dump_count(answer),
+        throat_clearing_count=_throat_clearing_count(answer),
     )
 
 
@@ -168,6 +198,16 @@ def _en_dash_separator_count(answer: str) -> int:
     # Count en dashes used like sentence separators. Numeric ranges such as
     # 3-5 or page labels should not match because they lack spaces.
     return len(re.findall(r"\s\u2013\s", answer))
+
+
+def _bullet_dump_count(answer: str) -> int:
+    bullet_lines = re.findall(r"(?m)^\s*(?:[-*]|\d+[.)])\s+\S", answer)
+    return 1 if len(bullet_lines) >= 4 else 0
+
+
+def _throat_clearing_count(answer: str) -> int:
+    first_sentence = re.split(r"(?<=[.!?])\s+", answer.strip(), maxsplit=1)[0].lower()
+    return 1 if any(first_sentence.startswith(prefix) for prefix in THROAT_CLEARING_PREFIXES) else 0
 
 
 def compare_model_scores(

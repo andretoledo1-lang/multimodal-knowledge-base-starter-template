@@ -14,4 +14,4 @@ You receive the question, the source cards, and one candidate answer. Grade the 
 
 # Output
 
-Return only a JSON object matching the DanteDash judge schema: score, verdict, dimension_notes, revision_notes, unknown, and iteration. No user-facing prose, ever.
+Return only a JSON object matching the DanteDash judge schema: score, verdict, dimension_notes, revision_notes, unknown, and iteration. The verdict must be lowercase "pass" or "fail". The revision_notes field must always be an array, even when it is empty. No user-facing prose, ever.

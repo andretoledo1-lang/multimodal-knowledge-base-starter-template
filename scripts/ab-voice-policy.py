@@ -241,6 +241,9 @@ def _summarize(results: list[dict[str, Any]], *, max_samples: int) -> dict[str, 
                 "em_dash_count": sum(row["voice"]["em_dash_count"] for row in scored),
                 "en_dash_separator_count": sum(row["voice"]["en_dash_separator_count"] for row in scored),
                 "ai_tell_count": sum(row["voice"]["ai_tell_count"] for row in scored),
+                "bullet_dump_count": sum(row["voice"]["bullet_dump_count"] for row in scored),
+                "throat_clearing_count": sum(row["voice"]["throat_clearing_count"] for row in scored),
+                "soft_warning_cases": sum(1 for row in scored if row["voice"]["has_soft_warnings"]),
                 "voice_clean_cases": sum(1 for row in scored if row["voice"]["voice_clean"]),
                 "case_count": len(rows),
                 "scored_case_count": len(scored),
@@ -308,7 +311,8 @@ def _print_text(payload: dict[str, Any]) -> None:
             print(
                 f"  {arm}: ok={arm_row['ok']} mean_gate={arm_row['mean_gate_score']} "
                 f"em_dash={arm_row['em_dash_count']} en_dash_sep={arm_row['en_dash_separator_count']} "
-                f"ai_tell={arm_row['ai_tell_count']} clean={arm_row['voice_clean_cases']}/{arm_row['scored_case_count']}"
+                f"ai_tell={arm_row['ai_tell_count']} soft={arm_row['soft_warning_cases']}/{arm_row['scored_case_count']} "
+                f"clean={arm_row['voice_clean_cases']}/{arm_row['scored_case_count']}"
             )
             for error in arm_row["errors"]:
                 print(f"    error={error}")
