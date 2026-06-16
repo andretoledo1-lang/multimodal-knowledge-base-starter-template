@@ -3,6 +3,27 @@ import { toast } from "sonner";
 import type { SearchResult } from "@/lib/api";
 import { parseSSE } from "@/lib/sse";
 
+export const CHAT_MODELS = [
+  {
+    id: "deepseek-v4-pro",
+    label: "deepseek - deepseek-v4-pro",
+  },
+  {
+    id: "codex-gpt-5.5-oauth",
+    label: "openai/codex - gpt-5.5 OAuth",
+  },
+  {
+    id: "claude-sonnet-4-6-oauth",
+    label: "claude - sonnet-4.6 OAuth",
+  },
+  {
+    id: "claude-opus-4-8-oauth",
+    label: "claude - opus-4.8 OAuth Premium",
+  },
+] as const;
+
+export type ChatModelId = (typeof CHAT_MODELS)[number]["id"];
+
 export interface ChatUserMessage {
   role: "user";
   content: string;
@@ -23,11 +44,19 @@ interface ChatOptions {
   topK?: number;
   modalityFilter?: string[] | null;
   maxImages?: number;
+  model?: ChatModelId;
 }
 
 interface SourcesPayload {
   sources: SearchResult[];
   visual_attachments: number;
+  citation_validation?: {
+    ok: boolean;
+    source_count: number;
+    cited_source_numbers: number[];
+    invalid_source_numbers: number[];
+    missing_citations: boolean;
+  };
 }
 
 export function useChat() {
@@ -94,6 +123,7 @@ export function useChat() {
           top_k: opts.topK ?? 5,
           modality_filter: opts.modalityFilter ?? null,
           max_images: opts.maxImages ?? 6,
+          chat_model: opts.model ?? "deepseek-v4-pro",
         }),
         signal: ctrl.signal,
       });

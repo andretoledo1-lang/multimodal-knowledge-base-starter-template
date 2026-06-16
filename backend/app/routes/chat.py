@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from ..deps import get_kb
 from ..kb import KnowledgeBase
+from ..providers import ProviderError
 from ..rag import GroundedAnswer, answer_with_vision
 from ..schemas import ChatRequest, search_result_to_dto
 
@@ -34,6 +35,7 @@ def _stream(kb: KnowledgeBase, req: ChatRequest) -> Iterator[str]:
             req.question,
             top_k=req.top_k,
             modality_filter=req.modality_filter,
+            chat_model=req.chat_model,
             max_images=req.max_images,
         ):
             if isinstance(chunk, str):
@@ -41,6 +43,14 @@ def _stream(kb: KnowledgeBase, req: ChatRequest) -> Iterator[str]:
                 yield _sse(None, json.dumps(chunk))
             else:
                 final = chunk
+    except ProviderError:
+        logger.exception("Chat provider failed")
+        yield _sse(
+            "error",
+            json.dumps({"message": f"Selected chat mode {req.chat_model} is currently unavailable."}),
+        )
+        yield _sse("done", "{}")
+        return
     except Exception as e:  # noqa: BLE001
         logger.exception("Chat stream failed")
         yield _sse("error", json.dumps({"message": str(e)}))
@@ -53,6 +63,8 @@ def _stream(kb: KnowledgeBase, req: ChatRequest) -> Iterator[str]:
         sources_payload["sources"] = [
             search_result_to_dto(r).model_dump() for r in final.sources
         ]
+        if final.citation_validation is not None:
+            sources_payload["citation_validation"] = final.citation_validation.to_payload()
 
     logger.info(
         "chat q=%r tokens=%d sources=%d visuals=%d",
