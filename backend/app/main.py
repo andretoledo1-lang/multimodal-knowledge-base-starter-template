@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .deps import get_kb, get_settings
-from .routes import chat, chat_state, ingest, library, preview, search, vault_index
+from .routes import chat, chat_state, graph, ingest, library, preview, search, vault_index
 
 logger = logging.getLogger("kb")
 
@@ -74,6 +74,7 @@ app.include_router(chat_state.router, prefix="/api")
 app.include_router(library.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")
 app.include_router(vault_index.router, prefix="/api")
+app.include_router(graph.router, prefix="/api")
 
 
 # Static SPA mount for prod. In dev this directory doesn't exist, so we skip.

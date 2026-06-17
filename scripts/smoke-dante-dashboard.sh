@@ -8,6 +8,7 @@ EXPECTED_TOTAL="${DANTE_MULTIMODAL_EXPECTED_TOTAL:-6281}"
 EXPECTED_IMAGES="${DANTE_MULTIMODAL_EXPECTED_IMAGES:-2094}"
 EXPECTED_TEXTS="${DANTE_MULTIMODAL_EXPECTED_TEXTS:-4187}"
 EXPECTED_DECOUPAGE="${DANTE_MULTIMODAL_EXPECTED_DECOUPAGE:-2093}"
+DANTE_GRAPH_STRICT_SMOKE="${DANTE_GRAPH_STRICT_SMOKE:-0}"
 ENV_FILE="${ROOT_DIR}/backend/.env"
 UV_BIN="${UV_BIN:-uv}"
 
@@ -18,6 +19,10 @@ fail() {
 
 note() {
   echo "OK: $*"
+}
+
+warn() {
+  echo "WARN: $*" >&2
 }
 
 [[ -f "${ENV_FILE}" ]] || fail "backend/.env is missing"
@@ -40,6 +45,32 @@ texts="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("by_modalit
 [[ -n "${images}" && -n "${texts}" ]] || fail "stats response is missing image/text modality counts"
 [[ "${images}" == "${EXPECTED_IMAGES}" ]] || fail "unexpected image count ${images}, expected ${EXPECTED_IMAGES}"
 [[ "${texts}" == "${EXPECTED_TEXTS}" ]] || fail "unexpected text count ${texts}, expected ${EXPECTED_TEXTS}"
+
+graph_health_json="$(curl -fsS --max-time 5 "${BACKEND_URL}/api/graph/health")" || fail "graph health endpoint is unavailable"
+graph_exists="$(
+  python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("source", {}).get("exists", False)).lower())' \
+    <<<"${graph_health_json}"
+)"
+graph_source="$(
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("source", {}).get("source_name", ""))' \
+    <<<"${graph_health_json}"
+)"
+if [[ "${graph_exists}" == "true" ]]; then
+  if [[ "${DANTE_GRAPH_STRICT_SMOKE}" == "1" ]]; then
+    graph_search_json="$(curl -fsS --max-time 30 "${BACKEND_URL}/api/graph/search?q=treatment&limit=3")" \
+      || fail "strict graph search failed"
+    graph_result_count="$(
+      python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("results", [])))' \
+        <<<"${graph_search_json}"
+    )"
+    [[ "${graph_result_count}" -gt 0 ]] || fail "strict graph search returned no results"
+  fi
+else
+  if [[ "${DANTE_GRAPH_STRICT_SMOKE}" == "1" ]]; then
+    fail "strict graph smoke expected a readable GraphML source"
+  fi
+  warn "graph source is unavailable; default smoke keeps graph optional"
+fi
 
 decoupage_check="$(
   cd "${ROOT_DIR}/backend" && EXPECTED_DECOUPAGE="${EXPECTED_DECOUPAGE}" "${UV_BIN}" run python - <<'PY'
@@ -119,6 +150,7 @@ archived="$(
 
 note "workspace=${ROOT_DIR}"
 note "backend=${BACKEND_URL} total=${total} image=${images} text=${texts}"
+note "graph=${graph_source:-unavailable} source_exists=${graph_exists} strict=${DANTE_GRAPH_STRICT_SMOKE}"
 note "${decoupage_check}"
 note "frontend=${FRONTEND_URL}"
 note "chat_workspace_project=${project_id} smoke_thread=${thread_id}"

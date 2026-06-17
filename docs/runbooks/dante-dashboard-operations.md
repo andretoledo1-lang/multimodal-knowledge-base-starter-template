@@ -27,6 +27,8 @@ existing aliases and Electron health checks keep working.
 - Chat model: DeepSeek `deepseek-v4-pro`.
 - Text reranker: Cohere `rerank-v4.0-pro`.
 - Visual analysis cards: Gemini vision provider where configured.
+- Black Label graph view: read-only LightRAG GraphML explorer where the local
+  graph source is configured or present.
 
 The backend process is the only service that should read provider credentials.
 MCP clients and launchers must not receive raw provider secrets.
@@ -67,6 +69,18 @@ Expected current KB count:
 {"total":6281,"by_modality":{"image":2094,"text":4187}}
 ```
 
+Graph health is read-only:
+
+```bash
+curl -fsS http://127.0.0.1:8035/api/graph/health
+curl -fsS "http://127.0.0.1:8035/api/graph/search?q=treatment&limit=3"
+```
+
+The GraphML source is backend configuration only. The default local source is
+the Black Label LightRAG `graph_chunk_entity_relation.graphml`, and it can be
+overridden with `DANTE_LIGHTRAG_GRAPHML_PATH`. The API returns redacted source
+metadata and must not expose absolute local paths in normal HTTP payloads.
+
 ## Local App State
 
 DanteDash keeps Knowledge Base data and chat workspace state separate:
@@ -84,6 +98,30 @@ clear, ingest, delete, or reindex commands for a chat-state reset.
 The smoke script performs one lightweight workspace write by creating and then
 archiving a temporary thread under the default project. It does not ingest,
 delete, clear, or reindex KB content.
+
+The same smoke script checks `/api/graph/health`. Missing external GraphML is a
+warning by default so unrelated dashboard health still passes. Use strict graph
+smoke only on machines expected to have the Black Label graph:
+
+```bash
+DANTE_GRAPH_STRICT_SMOKE=1 /Users/vidigal/codex/dantedash/scripts/smoke-dante-dashboard.sh
+```
+
+## Graph View
+
+The Graph tab is a read-only relationship map over the external LightRAG
+GraphML. Search, route/entity filters, top nodes, source hints, and the
+inspector use `/api/graph/*` endpoints and work without a canvas.
+
+The visual renderer is opt-in:
+
+1. Opening the Graph tab starts with the visual paused.
+2. `Show visual` lazy-loads the renderer and mounts bounded graph canvases.
+3. `Pause visual`, leaving the Graph tab, or unmounting the panel destroys the
+   renderer and removes its canvases.
+
+Do not use Graph View operations for ingest, reindex, clear, delete, or vault
+mutation. The graph source should remain an external read-only file.
 
 ## MCP Smoke
 

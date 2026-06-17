@@ -52,6 +52,147 @@ export interface Stats {
   by_modality: Record<string, number>;
 }
 
+export interface GraphSource {
+  source_name: string;
+  exists: boolean;
+  size_bytes: number | null;
+  mtime_ns: number | null;
+  mtime_iso: string | null;
+  metadata_hash: string | null;
+}
+
+export interface GraphCache {
+  loaded: boolean;
+  fresh: boolean;
+  stale: boolean;
+  loaded_at: string | null;
+  metadata_hash: string | null;
+}
+
+export interface GraphCountItem {
+  id: string;
+  label: string;
+  count: number;
+}
+
+export interface GraphObsidianHint {
+  source_file: string;
+  best_effort_rel_path: string;
+  obsidian_uri: string;
+}
+
+export interface GraphPreparedQuery {
+  surface: string;
+  query: string;
+}
+
+export interface GraphNodeCard {
+  id: string;
+  label: string;
+  entity_type: string;
+  routes: string[];
+  route_labels: string[];
+  source_families: string[];
+  degree: number;
+  weighted_degree: number;
+  description: string;
+  source_files: string[];
+  source_ids: string[];
+  obsidian_hints: GraphObsidianHint[];
+  prepared_queries: GraphPreparedQuery[];
+  score?: number | null;
+  snippet?: string | null;
+}
+
+export interface GraphEdgeCard {
+  id: string;
+  source: string;
+  target: string;
+  other_node_id: string | null;
+  weight: number;
+  keywords: string[];
+  routes: string[];
+  route_labels: string[];
+  source_files: string[];
+  description: string;
+}
+
+export interface GraphNodeDetail extends GraphNodeCard {
+  descriptions: string[];
+  created_at: string | null;
+  truncate: string | null;
+  adjacent_edges: GraphEdgeCard[];
+}
+
+export interface GraphVisualNode {
+  id: string;
+  label: string;
+  entity_type: string;
+  routes: string[];
+  route_labels: string[];
+  source_families: string[];
+  degree: number;
+  weighted_degree: number;
+  description: string;
+}
+
+export interface GraphVisualEdge {
+  id: string;
+  source: string;
+  target: string;
+  weight: number;
+  routes: string[];
+  route_labels: string[];
+  keywords: string[];
+  description: string;
+}
+
+export interface GraphPayload {
+  nodes: GraphVisualNode[];
+  edges: GraphVisualEdge[];
+  returned_nodes: number;
+  returned_edges: number;
+  truncated_edges: boolean;
+}
+
+export interface GraphHealthResponse {
+  ok: boolean;
+  dataset_id: string;
+  source: GraphSource;
+  loaded: boolean;
+  cache: GraphCache;
+  node_count: number | null;
+  edge_count: number | null;
+  loaded_at: string | null;
+  read_only: boolean;
+  error: string | null;
+}
+
+export interface GraphSummaryResponse {
+  dataset_id: string;
+  source: GraphSource;
+  cache: GraphCache;
+  node_count: number;
+  edge_count: number;
+  entity_type_counts: GraphCountItem[];
+  route_counts: GraphCountItem[];
+  source_family_counts: GraphCountItem[];
+  top_nodes: GraphNodeCard[];
+  graph: GraphPayload;
+}
+
+export interface GraphSearchResponse {
+  query: string;
+  results: GraphNodeCard[];
+}
+
+export interface GraphSubgraphResponse {
+  dataset_id: string;
+  center: GraphNodeCard | null;
+  depth: number;
+  graph: GraphPayload;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -232,6 +373,74 @@ export const api = {
 
   async stats(): Promise<Stats> {
     return jsonOrThrow(await fetch("/api/stats"));
+  },
+
+  async graphHealth(args?: { load?: boolean }): Promise<GraphHealthResponse> {
+    const params = new URLSearchParams();
+    if (args?.load) params.set("load", "true");
+    const query = params.toString();
+    return jsonOrThrow(await fetch(`/api/graph/health${query ? `?${query}` : ""}`));
+  },
+
+  async graphSummary(args?: {
+    top_nodes_limit?: number;
+    max_nodes?: number;
+    max_edges?: number;
+  }): Promise<GraphSummaryResponse> {
+    const params = new URLSearchParams();
+    if (args?.top_nodes_limit != null) {
+      params.set("top_nodes_limit", String(args.top_nodes_limit));
+    }
+    if (args?.max_nodes != null) params.set("max_nodes", String(args.max_nodes));
+    if (args?.max_edges != null) params.set("max_edges", String(args.max_edges));
+    const query = params.toString();
+    return jsonOrThrow(await fetch(`/api/graph/summary${query ? `?${query}` : ""}`));
+  },
+
+  async graphSearch(args: {
+    q: string;
+    limit?: number;
+    entity_type?: string | null;
+    route?: string | null;
+  }): Promise<GraphSearchResponse> {
+    const params = new URLSearchParams({ q: args.q });
+    if (args.limit != null) params.set("limit", String(args.limit));
+    if (args.entity_type) params.set("entity_type", args.entity_type);
+    if (args.route) params.set("route", args.route);
+    return jsonOrThrow(await fetch(`/api/graph/search?${params.toString()}`));
+  },
+
+  async graphSubgraph(args?: {
+    node_id?: string | null;
+    depth?: number;
+    max_nodes?: number;
+    max_edges?: number;
+    entity_type?: string | null;
+    route?: string | null;
+  }): Promise<GraphSubgraphResponse> {
+    const params = new URLSearchParams();
+    if (args?.node_id) params.set("node_id", args.node_id);
+    if (args?.depth != null) params.set("depth", String(args.depth));
+    if (args?.max_nodes != null) params.set("max_nodes", String(args.max_nodes));
+    if (args?.max_edges != null) params.set("max_edges", String(args.max_edges));
+    if (args?.entity_type) params.set("entity_type", args.entity_type);
+    if (args?.route) params.set("route", args.route);
+    const query = params.toString();
+    return jsonOrThrow(await fetch(`/api/graph/subgraph${query ? `?${query}` : ""}`));
+  },
+
+  async graphNode(
+    nodeId: string,
+    args?: { edge_limit?: number },
+  ): Promise<GraphNodeDetail> {
+    const params = new URLSearchParams();
+    if (args?.edge_limit != null) params.set("edge_limit", String(args.edge_limit));
+    const query = params.toString();
+    return jsonOrThrow(
+      await fetch(
+        `/api/graph/node/${encodeURIComponent(nodeId)}${query ? `?${query}` : ""}`,
+      ),
+    );
   },
 
   async items(args?: {

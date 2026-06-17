@@ -4,15 +4,16 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { MessageSquare, FolderOpen, Search } from "lucide-react";
+import { MessageSquare, FolderOpen, Network, Search } from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchPanel, type SearchPanelHandle } from "@/components/SearchPanel";
 import { ChatPanel } from "@/components/ChatPanel";
 import { LibraryPanel } from "@/components/LibraryPanel";
+import { GraphPanel } from "@/components/GraphPanel";
 import { useChatWorkspace } from "@/hooks/useChatWorkspace";
 
-type TabKey = "search" | "chat" | "library";
+type TabKey = "search" | "chat" | "library" | "graph";
 
 const SIDEBAR_WIDTH_KEY = "dante-dashboard-sidebar-width";
 
@@ -99,6 +100,9 @@ export default function App() {
               <TabsTrigger value="library">
                 <FolderOpen className="h-4 w-4" /> Library
               </TabsTrigger>
+              <TabsTrigger value="graph">
+                <Network className="h-4 w-4" /> Graph
+              </TabsTrigger>
             </TabsList>
             <div className="hidden text-xs text-muted-foreground sm:block">
               <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
@@ -117,6 +121,9 @@ export default function App() {
             </TabsContent>
             <TabsContent value="library" className="h-full">
               <LibraryPanel />
+            </TabsContent>
+            <TabsContent value="graph" className="h-full">
+              <GraphPanel />
             </TabsContent>
           </div>
         </Tabs>
