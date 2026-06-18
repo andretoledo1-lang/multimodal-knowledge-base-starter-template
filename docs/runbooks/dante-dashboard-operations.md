@@ -120,6 +120,12 @@ The visual renderer is opt-in:
 3. `Pause visual`, leaving the Graph tab, or unmounting the panel destroys the
    renderer and removes its canvases.
 
+Graph focus mode is layout-only. `Focus graph` hides the Graph tab search/results
+rail and inspector rail so the renderer can use the wider center area. `Exit
+focus` restores both rails with the current search, filter, selection, and
+visual pause state intact. The keyboard shortcut is `F` when focus is not inside
+a text field.
+
 Do not use Graph View operations for ingest, reindex, clear, delete, or vault
 mutation. The graph source should remain an external read-only file.
 

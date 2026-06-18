@@ -22,10 +22,12 @@ export function GraphCanvas({
   payload,
   selectedNodeId,
   onSelectNode,
+  layoutVersion = 0,
 }: {
   payload: GraphPayload;
   selectedNodeId: string | null;
   onSelectNode: (nodeId: string | null) => void;
+  layoutVersion?: number;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const graphRef = useRef<Graph | null>(null);
@@ -156,6 +158,17 @@ export function GraphCanvas({
     });
     renderer.refresh();
   }, [selectedNodeId]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      const renderer = rendererRef.current;
+      if (!renderer) return;
+      renderer.resize(true);
+      renderer.refresh();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [layoutVersion, payload]);
 
   if (payload.nodes.length === 0) {
     return (

@@ -3,6 +3,7 @@ import {
   lazy,
   Suspense,
   useCallback,
+  useEffect,
   useMemo,
   useState,
   type FormEvent,
@@ -14,6 +15,8 @@ import {
   ExternalLink,
   GitBranch,
   Loader2,
+  Maximize2,
+  Minimize2,
   Network,
   Pause,
   Play,
@@ -46,6 +49,8 @@ export function GraphPanel() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [visualEnabled, setVisualEnabled] = useState(false);
   const [visualErrorKey, setVisualErrorKey] = useState(0);
+  const [graphFocus, setGraphFocus] = useState(false);
+  const [layoutVersion, setLayoutVersion] = useState(0);
 
   const health = useGraphHealth();
   const graphExists = health.data?.source.exists === true;
@@ -101,7 +106,26 @@ export function GraphPanel() {
     setSelectedNodeId(nodeId);
   }, []);
 
+  const toggleGraphFocus = useCallback(() => {
+    setGraphFocus((value) => !value);
+    setLayoutVersion((value) => value + 1);
+  }, []);
+
   const resetVisualError = () => setVisualErrorKey((value) => value + 1);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.repeat) return;
+      if (event.key.toLowerCase() !== "f") return;
+      if (isShortcutTargetIgnored(event.target)) return;
+      event.preventDefault();
+      toggleGraphFocus();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [toggleGraphFocus]);
 
   const selectedCard = useMemo(() => {
     if (!selectedNodeId) return null;
@@ -132,13 +156,23 @@ export function GraphPanel() {
               : "border-destructive/35 bg-destructive/10 text-destructive",
           )}
         >
-          <Database className="h-3.5 w-3.5" />
-          {statusText}
-        </div>
-      </header>
+        <Database className="h-3.5 w-3.5" />
+        {statusText}
+      </div>
+    </header>
 
-      <div className="slack-panel grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)_330px]">
-        <aside className="comfortable-scrollbar min-h-0 overflow-y-auto border-b border-border/70 p-4 lg:border-b-0 lg:border-r">
+    <div
+      className={cn(
+        "slack-panel grid min-h-0 flex-1 grid-cols-1 overflow-hidden",
+        graphFocus ? "lg:grid-cols-[minmax(0,1fr)]" : "lg:grid-cols-[320px_minmax(0,1fr)_330px]",
+      )}
+    >
+      <aside
+        className={cn(
+          "comfortable-scrollbar min-h-0 overflow-y-auto border-b border-border/70 p-4 lg:border-b-0 lg:border-r",
+          graphFocus && "hidden",
+        )}
+      >
           <form onSubmit={onSubmit} className="space-y-3">
             <div className="relative">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -266,34 +300,50 @@ export function GraphPanel() {
               </div>
               <div className="mt-0.5 truncate text-xs text-muted-foreground">
                 {visualPayload
-                  ? `${visualPayload.returned_nodes} nodes, ${visualPayload.returned_edges} edges`
+                  ? `${visualPayload.returned_nodes} nodes, ${visualPayload.returned_edges} edges${
+                      graphFocus ? " - Focus mode" : ""
+                    }`
                   : "Bounded graph payload"}
               </div>
             </div>
-            {visualEnabled ? (
+            <div className="flex shrink-0 items-center gap-2">
               <Button
-                variant="outline"
+                type="button"
+                variant={graphFocus ? "secondary" : "outline"}
                 size="sm"
-                onClick={() => setVisualEnabled(false)}
-                aria-label="Pause visual graph"
+                onClick={toggleGraphFocus}
+                aria-label={graphFocus ? "Exit graph focus mode" : "Enter graph focus mode"}
+                aria-pressed={graphFocus}
+                title={graphFocus ? "Exit graph focus mode (F)" : "Focus graph (F)"}
               >
-                <Pause className="h-4 w-4" />
-                Pause visual
+                {graphFocus ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                <span className="hidden sm:inline">{graphFocus ? "Exit focus" : "Focus graph"}</span>
               </Button>
-            ) : (
-              <Button
-                size="sm"
-                onClick={() => {
-                  resetVisualError();
-                  setVisualEnabled(true);
-                }}
-                disabled={!graphExists || !visualPayload}
-                aria-label="Show visual graph"
-              >
-                <Play className="h-4 w-4" />
-                Show visual
-              </Button>
-            )}
+              {visualEnabled ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setVisualEnabled(false)}
+                  aria-label="Pause visual graph"
+                >
+                  <Pause className="h-4 w-4" />
+                  <span className="hidden sm:inline">Pause visual</span>
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    resetVisualError();
+                    setVisualEnabled(true);
+                  }}
+                  disabled={!graphExists || !visualPayload}
+                  aria-label="Show visual graph"
+                >
+                  <Play className="h-4 w-4" />
+                  <span className="hidden sm:inline">Show visual</span>
+                </Button>
+              )}
+            </div>
           </div>
 
           <div className="min-h-0 flex-1 p-4">
@@ -311,6 +361,7 @@ export function GraphPanel() {
                     payload={visualPayload}
                     selectedNodeId={selectedNodeId}
                     onSelectNode={selectNode}
+                    layoutVersion={layoutVersion}
                   />
                 </Suspense>
               </GraphVisualBoundary>
@@ -328,7 +379,7 @@ export function GraphPanel() {
           </div>
         </main>
 
-        <aside className="comfortable-scrollbar min-h-0 overflow-y-auto p-4">
+        <aside className={cn("comfortable-scrollbar min-h-0 overflow-y-auto p-4", graphFocus && "hidden")}>
           <Inspector
             node={selectedCard}
             loading={nodeDetail.isFetching && selectedNodeId != null}
@@ -573,6 +624,14 @@ function Badge({ children }: { children: ReactNode }) {
       {children}
     </span>
   );
+}
+
+function isShortcutTargetIgnored(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "button" || tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 
 function statusLabel(args: {
