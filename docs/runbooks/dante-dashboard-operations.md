@@ -107,6 +107,15 @@ smoke only on machines expected to have the Black Label graph:
 DANTE_GRAPH_STRICT_SMOKE=1 /Users/vidigal/codex/dantedash/scripts/smoke-dante-dashboard.sh
 ```
 
+## Workspace Shell
+
+The left workspace sidebar is a client-side shell control. Users can hide or
+restore it from the top bar, or with `Cmd+B` / `Ctrl+B` when focus is not inside
+an editor control. The expanded sidebar width is adjustable by dragging its
+right edge and is persisted locally. Collapsing or resizing the sidebar does not
+change projects, threads, chat state, KB data, GraphML, ingest, or runtime
+configuration.
+
 ## Graph View
 
 The Graph tab is a read-only relationship map over the external LightRAG
