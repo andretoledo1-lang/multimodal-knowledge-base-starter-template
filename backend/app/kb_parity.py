@@ -55,6 +55,13 @@ def package_key_from_metadata(metadata: Mapping[str, Any] | None, node_id: str =
     return node_id
 
 
+def package_layer_from_metadata(metadata: Mapping[str, Any] | None) -> str:
+    meta = metadata or {}
+    modality = (_first_text(meta, ("modality", "media_type")) or "unknown").lower()
+    artifact_type = (_first_text(meta, ("artifact_type", "source_kind")) or "unknown").lower()
+    return f"{modality}:{artifact_type}"
+
+
 def vector_provenance_status(metadata: Mapping[str, Any] | None) -> str:
     meta = metadata or {}
     model = _first_text(meta, ("embedding_model", "embed_model", "embedding_provider_model", "model"))
@@ -73,8 +80,14 @@ def classify_rows(
     ids: Sequence[str],
     metadatas: Sequence[Mapping[str, Any] | None],
     kh_package_keys: Iterable[str] | None = None,
+    kh_package_layers: Mapping[str, Iterable[str]] | None = None,
 ) -> list[KbParityRow]:
     kh_keys = {key for key in (kh_package_keys or []) if key}
+    kh_layers = {
+        str(package_key): {str(layer) for layer in layers if layer}
+        for package_key, layers in (kh_package_layers or {}).items()
+        if package_key
+    }
     file_ids = set(ids)
     for meta in metadatas:
         if not meta:
@@ -93,7 +106,12 @@ def classify_rows(
         artifact_type = _first_text(meta, ("artifact_type",)) or "unknown"
         package_key = package_key_from_metadata(meta, node_id)
         row_class, reasons = _classify_row(node_id, meta, file_ids, node_counts[node_id])
-        kh_relationship = "matched" if package_key in kh_keys else "not_compared" if not kh_keys else "missing_in_kh"
+        kh_relationship = _kh_relationship(
+            package_key=package_key,
+            layer_key=package_layer_from_metadata(meta),
+            kh_keys=kh_keys,
+            kh_layers=kh_layers,
+        )
         rows.append(
             KbParityRow(
                 node_id=node_id,
@@ -115,11 +133,12 @@ def audit_kb(
     *,
     run_id: str,
     kh_package_keys: Iterable[str] | None = None,
+    kh_package_layers: Mapping[str, Iterable[str]] | None = None,
 ) -> KbParityAudit:
     collection_payload = kb.collection.get(include=["metadatas"])
     ids = [str(item) for item in collection_payload.get("ids", [])]
     metadatas = collection_payload.get("metadatas", [])
-    rows = classify_rows(ids, metadatas, kh_package_keys=kh_package_keys)
+    rows = classify_rows(ids, metadatas, kh_package_keys=kh_package_keys, kh_package_layers=kh_package_layers)
     by_modality = _safe_count_by_modality(kb, rows)
 
     return KbParityAudit(
@@ -227,6 +246,23 @@ def _classify_row(
         return "orphaned", reasons
 
     return "canonical", ["canonical_candidate"]
+
+
+def _kh_relationship(
+    *,
+    package_key: str,
+    layer_key: str,
+    kh_keys: set[str],
+    kh_layers: Mapping[str, set[str]],
+) -> str:
+    if kh_layers:
+        layers = kh_layers.get(package_key)
+        if layers is None:
+            return "missing_in_kh"
+        return "matched" if layer_key in layers else "missing_layer_in_kh"
+    if not kh_keys:
+        return "not_compared"
+    return "matched" if package_key in kh_keys else "missing_in_kh"
 
 
 def _row_public_dict(row: KbParityRow) -> dict[str, Any]:

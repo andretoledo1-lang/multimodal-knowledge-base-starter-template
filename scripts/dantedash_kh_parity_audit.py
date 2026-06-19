@@ -16,6 +16,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.deps import get_kb  # noqa: E402
 from app.kb_parity import audit_kb, package_key_from_metadata, write_audit_manifests  # noqa: E402
+from app.knowledge_hub_client import sanitize_public_payload  # noqa: E402
 
 
 def main() -> int:
@@ -53,7 +54,7 @@ def main() -> int:
         "by_vector_provenance": audit.by_vector_provenance,
     }
     if not args.no_write:
-        summary["manifests"] = write_audit_manifests(audit, args.output_dir)
+        summary["manifests"] = sanitize_public_payload(write_audit_manifests(audit, args.output_dir))
 
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
@@ -73,7 +74,7 @@ def _json_rows(payload: Any) -> list[dict[str, Any]]:
     if isinstance(payload, list):
         return [item for item in payload if isinstance(item, dict)]
     if isinstance(payload, dict):
-        for key in ("rows", "items", "results", "data"):
+        for key in ("rows", "items", "results", "data", "assets"):
             value = payload.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
@@ -82,6 +83,10 @@ def _json_rows(payload: Any) -> list[dict[str, Any]]:
 
 
 def _manifest_key(row: dict[str, Any]) -> str:
+    for field in ("source_sha256", "dante_image_id", "content_hash", "asset_id", "asset_identity", "relative_path"):
+        value = row.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return package_key_from_metadata(row)
 
 
