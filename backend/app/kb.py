@@ -19,6 +19,7 @@ import io
 import logging
 import shutil
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,7 @@ from typing import Any, Callable
 import chromadb
 import cv2
 import fitz  # PyMuPDF
+import httpx
 import numpy as np
 from llama_index.core import Document
 from llama_index.core.node_parser import SentenceSplitter
@@ -259,7 +261,15 @@ class KnowledgeBase:
 
     def _embed_bytes(self, data: bytes, mime_type: str) -> list[float]:
         """Embed one media blob via Voyage multimodal document mode."""
-        return _l2_normalize(self.embedder.embed_bytes(data, mime_type, input_type="document"))
+        attempt = 0
+        while True:
+            try:
+                return _l2_normalize(self.embedder.embed_bytes(data, mime_type, input_type="document"))
+            except httpx.HTTPError:
+                attempt += 1
+                if attempt > 3:
+                    raise
+                time.sleep(min(2**attempt, 20))
 
     def _embed_text(self, text: str, *, input_type: str) -> list[float]:
         return _l2_normalize(self.embedder.embed_text(text, input_type=input_type))
@@ -276,6 +286,8 @@ class KnowledgeBase:
         *,
         original_name: str | None = None,
         tags: list[str] | None = None,
+        extra_metadata: dict[str, Any] | None = None,
+        copy_to_uploads: bool = True,
         on_progress: ProgressCallback = _noop,
         video_frame_interval_s: int = DEFAULT_VIDEO_FRAME_INTERVAL_S,
     ) -> list[str]:
@@ -285,20 +297,26 @@ class KnowledgeBase:
         if not src.exists():
             raise FileNotFoundError(src)
 
-        # Copy original into managed uploads dir (so it survives temp cleanup)
         file_id = uuid.uuid4().hex
-        dest = self.upload_dir / f"{file_id}{ext}"
-        if src.resolve() != dest.resolve():
+        if copy_to_uploads:
+            # Copy original into managed uploads dir (so it survives temp cleanup).
+            dest = self.upload_dir / f"{file_id}{ext}"
+        else:
+            dest = src.resolve()
+        if copy_to_uploads and src.resolve() != dest.resolve():
             shutil.copy2(src, dest)
 
         base_meta = {
             "id": file_id,
             "original_name": original_name or src.name,
             "file_path": str(dest),
+            "managed_upload": copy_to_uploads,
             "upload_time": datetime.now().isoformat(timespec="seconds"),
             "file_size": dest.stat().st_size,
             "tags": ",".join(tags) if tags else "",
         }
+        if extra_metadata:
+            base_meta.update(extra_metadata)
 
         on_progress(PipelineEvent("read", f"Loaded {base_meta['original_name']} ({_human_size(base_meta['file_size'])})"))
 
@@ -321,8 +339,7 @@ class KnowledgeBase:
         on_progress: ProgressCallback,
     ) -> str:
         on_progress(PipelineEvent("embed", "Embedding image with Voyage multimodal..."))
-        data = path.read_bytes()
-        mime = MIME_BY_EXT.get(path.suffix.lower(), "image/jpeg")
+        data, mime = _image_embedding_payload(path)
         vec = self._embed_bytes(data, mime)
 
         node_id = f"img_{base_meta['id']}"
@@ -403,19 +420,26 @@ class KnowledgeBase:
             and duration_s <= MAX_VIDEO_SECONDS_DIRECT
         )
         if can_embed_full_video:
-            on_progress(PipelineEvent("embed", "Embedding full MP4 with Voyage multimodal..."))
-            data = path.read_bytes()
-            vec = self._embed_bytes(data, "video/mp4")
-            node_id = f"vid_{base_meta['id']}"
-            node = TextNode(
-                id_=node_id,
-                text=f"[Video] {base_meta['original_name']} ({duration_s:.1f}s)",
-                metadata={**base_meta, "modality": "video", "frame_index": -1},
-                embedding=vec,
-            )
-            self.vector_store.add([node])
-            on_progress(PipelineEvent("done", f"Indexed video: {base_meta['original_name']}", 1.0))
-            return [node_id]
+            try:
+                on_progress(PipelineEvent("embed", "Embedding full MP4 with Voyage multimodal..."))
+                data = path.read_bytes()
+                vec = self._embed_bytes(data, "video/mp4")
+                node_id = f"vid_{base_meta['id']}"
+                node = TextNode(
+                    id_=node_id,
+                    text=f"[Video] {base_meta['original_name']} ({duration_s:.1f}s)",
+                    metadata={**base_meta, "modality": "video", "frame_index": -1},
+                    embedding=vec,
+                )
+                self.vector_store.add([node])
+                on_progress(PipelineEvent("done", f"Indexed video: {base_meta['original_name']}", 1.0))
+                return [node_id]
+            except (ProviderError, httpx.HTTPError) as exc:
+                logger.warning(
+                    "Full-video embedding failed for %s; falling back to sampled frames: %s",
+                    base_meta["original_name"],
+                    exc,
+                )
 
         # Long or non-MP4 video: sample frames every N seconds, embed each as image.
         on_progress(PipelineEvent(
@@ -692,8 +716,13 @@ class KnowledgeBase:
         metas = data.get("metadatas") or []
         for meta in metas:
             fp = (meta or {}).get("file_path")
-            if fp and Path(fp).exists():
-                Path(fp).unlink(missing_ok=True)
+            if fp and (meta or {}).get("managed_upload", True):
+                path = Path(fp)
+                try:
+                    if path.exists() and path.resolve().is_relative_to(self.upload_dir.resolve()):
+                        path.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not delete managed upload %s", path)
         self.collection.delete(ids=ids)
         return len(ids)
 
@@ -739,6 +768,15 @@ def _image_to_jpeg_bytes(img: Image.Image, quality: int = 88) -> bytes:
         img = img.convert("RGB")
     img.save(buf, format="JPEG", quality=quality)
     return buf.getvalue()
+
+
+def _image_embedding_payload(path: Path) -> tuple[bytes, str]:
+    mime = MIME_BY_EXT.get(path.suffix.lower(), "image/jpeg")
+    if mime in {"image/jpeg", "image/png"}:
+        return path.read_bytes(), mime
+    with Image.open(path) as img:
+        img.seek(0)
+        return _image_to_jpeg_bytes(img), "image/jpeg"
 
 
 def _rerank_document(result: SearchResult) -> str:

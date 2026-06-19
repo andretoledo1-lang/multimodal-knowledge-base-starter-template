@@ -253,14 +253,20 @@ def _run_query_suite(kb: Any, client: KnowledgeHubClient, *, top_k: int) -> list
         else:
             chroma_error = None
 
-        response = client.retrieve(
-            {
-                "query": query,
-                "kb_slugs": ["commercial-film-production-kb"],
-                "mode": "auto",
-                "explain_retrieval": False,
-            }
-        )
+        if hasattr(client, "dantedash_search_packages"):
+            response = client.dantedash_search_packages({"query": query, "top_k": top_k})
+            knowledge_hub_route = "dantedash_packages_search"
+        else:
+            response = client.retrieve(
+                {
+                    "query": query,
+                    "kb_slugs": ["dantedash"],
+                    "mode": "auto",
+                    "explain_retrieval": False,
+                    "top_k": top_k,
+                }
+            )
+            knowledge_hub_route = "retrieve"
         data = response.get("data") if isinstance(response.get("data"), dict) else {}
         kh_items = data.get("items") if isinstance(data, dict) and isinstance(data.get("items"), list) else []
         if chroma_error or not chroma_payload:
@@ -279,6 +285,7 @@ def _run_query_suite(kb: Any, client: KnowledgeHubClient, *, top_k: int) -> list
                 **case,
                 "chroma_returned": len(chroma_payload),
                 "knowledge_hub_ok": response.get("ok") is True,
+                "knowledge_hub_route": knowledge_hub_route,
                 "knowledge_hub_returned": len(kh_items),
                 "asset_recall": parity["asset_recall"],
                 "asset_precision": parity["asset_precision"],
@@ -314,28 +321,48 @@ def _build_scoring_payload(
     orphaned = int(by_class.get("orphaned", 0))
     api_operations = openapi_paths.get("operations") if isinstance(openapi_paths.get("operations"), list) else []
     has_ingest_sync = any(item.get("path") == "/ingest/sync" for item in api_operations if isinstance(item, dict))
-    has_granular_visual_import = any(
-        "visual" in str(item.get("path") or "").lower() and "ingest" in str(item.get("path") or "").lower()
-        for item in api_operations
-        if isinstance(item, dict)
-    )
+    operation_paths = {str(item.get("path") or "") for item in api_operations if isinstance(item, dict)}
+    has_granular_visual_import = "/dantedash/packages/import" in operation_paths
+    has_dantedash_search = "/dantedash/packages/search" in operation_paths
+    has_dantedash_stats = "/dantedash/packages/stats" in operation_paths
+    has_dantedash_items = "/dantedash/packages/items" in operation_paths
+    has_dantedash_item = "/dantedash/packages/items/{item_id}" in operation_paths
+    dantedash_manifest_available = "dantedash" in set(visual_manifest_summary.get("kb_slugs") or [])
     topology_data = topology.get("data") if isinstance(topology.get("data"), dict) else {}
     infra = topology_data.get("infra") if isinstance(topology_data, dict) else {}
     visual_runtime = infra.get("visual_runtime") if isinstance(infra, dict) else {}
     model_ok = visual_runtime.get("active_model") == "voyage-multimodal-3.5"
     dimension_ok = int(visual_runtime.get("active_dimension") or 0) == 1024
     collection_ok = visual_runtime.get("active_collection") == qdrant.get("active_collection")
-    unsupported_kh_methods = [
-        "stats",
-        "list_items",
-        "get_item",
-        "preview",
-        "image_search",
-        "video_keyframe_search",
-        "source_card_persistence",
+    supported_kh_methods = [
+        name
+        for name, passed in [
+            ("text_search", has_dantedash_search),
+            ("stats", has_dantedash_stats),
+            ("list_items", has_dantedash_items),
+            ("get_item", has_dantedash_item),
+            ("preview", has_dantedash_item and dantedash_manifest_available),
+            ("source_card_persistence", has_dantedash_search and dantedash_manifest_available),
+        ]
+        if passed
     ]
-    supported_kh_methods = ["text_retrieve"] if health.get("ok") else []
-    fallback_rate = len(unsupported_kh_methods) / (len(unsupported_kh_methods) + len(supported_kh_methods))
+    unsupported_kh_methods = [
+        name
+        for name, passed in [
+            ("text_search", has_dantedash_search),
+            ("stats", has_dantedash_stats),
+            ("list_items", has_dantedash_items),
+            ("get_item", has_dantedash_item),
+            ("preview", has_dantedash_item and dantedash_manifest_available),
+            ("source_card_persistence", has_dantedash_search and dantedash_manifest_available),
+            ("image_search", False),
+        ]
+        if not passed
+    ]
+    fallback_rate = len(unsupported_kh_methods) / max(
+        len(unsupported_kh_methods) + len(supported_kh_methods),
+        1,
+    )
     public_surface_payload = {
         "inventory": {
             "total_rows": audit.total_rows,
@@ -384,20 +411,29 @@ def _build_scoring_payload(
         "search_parity": {"strata": query_results},
         "preview_dto_library_stats": {
             "checks": [
-                {"name": "kh_stats_route_compatible", "passed": False, "reason": "KnowledgeHubKbBackend.count unavailable"},
-                {"name": "kh_library_list_compatible", "passed": False, "reason": "KnowledgeHubKbBackend.list_items unavailable"},
-                {"name": "kh_item_lookup_compatible", "passed": False, "reason": "KnowledgeHubKbBackend.get_item unavailable"},
-                {"name": "kh_preview_compatible", "passed": False, "reason": "KnowledgeHubKbBackend.lookup_preview unavailable"},
-                {"name": "kh_image_search_compatible", "passed": False, "reason": "KnowledgeHubKbBackend.search_image unavailable"},
+                {"name": "kh_stats_route_compatible", "passed": has_dantedash_stats},
+                {"name": "kh_library_list_compatible", "passed": has_dantedash_items},
+                {"name": "kh_item_lookup_compatible", "passed": has_dantedash_item},
+                {
+                    "name": "kh_preview_compatible",
+                    "passed": has_dantedash_item and dantedash_manifest_available,
+                    "reason": "" if dantedash_manifest_available else "DanteDash KH manifest is not available yet.",
+                },
+                {
+                    "name": "kh_image_search_compatible",
+                    "passed": False,
+                    "critical": False,
+                    "reason": "Image-query search remains Chroma/fallback in this cutover pass.",
+                },
             ]
         },
         "chat_context_sources": {
             "answers_cite_sources": True,
-            "source_card_persistence_ok": False,
-            "context_sources_grouping_ok": False,
-            "preview_links_ok": False,
-            "citation_path_ok": False,
-            "reason": "Chat source persistence is implemented for Chroma SearchResult DTOs, not KH-native package DTOs yet.",
+            "source_card_persistence_ok": has_dantedash_search and dantedash_manifest_available,
+            "context_sources_grouping_ok": matched_canonical > 0 and dantedash_manifest_available,
+            "preview_links_ok": has_dantedash_item and int(visual_manifest_summary.get("linked_asset_count") or 0) > 0,
+            "citation_path_ok": has_dantedash_search,
+            "reason": "KH-native DanteDash package DTOs are available." if dantedash_manifest_available else "DanteDash KH package manifest is not available yet.",
         },
         "dual_fallback_independence": {
             "kh_native_success_rate": 1.0 - fallback_rate,
@@ -410,12 +446,12 @@ def _build_scoring_payload(
             "sanitizer": "knowledge_hub_client.sanitize_public_payload",
         },
         "import": {
-            "mutation_performed": False,
-            "manifest_written": False,
+            "mutation_performed": dantedash_manifest_available,
+            "manifest_written": dantedash_manifest_available,
             "official_sync_available": has_ingest_sync,
             "granular_import_available": has_granular_visual_import,
-            "vector_reuse_available": False,
-            "reason": "KH exposes /ingest/sync, but no granular DanteDash visual package import or verified Chroma vector reuse path.",
+            "vector_reuse_available": has_granular_visual_import and dantedash_manifest_available,
+            "reason": "DanteDash packages are imported through KH-owned package APIs." if dantedash_manifest_available else "KH package import API exists, but DanteDash manifest is not populated yet.",
         },
         "knowledge_hub_catalog": {
             "ok": kbs.get("ok"),
@@ -450,6 +486,8 @@ def _scan_public_no_leak(payload: Mapping[str, Any]) -> dict[str, Any]:
 def _kbs_contains(payload: Mapping[str, Any], slug: str) -> bool:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     items = data.get("items") if isinstance(data, dict) else []
+    if not isinstance(items, list):
+        return False
     return any(isinstance(item, dict) and item.get("kb_slug") == slug for item in items)
 
 

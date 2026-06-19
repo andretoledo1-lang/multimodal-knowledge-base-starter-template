@@ -114,6 +114,30 @@ class KnowledgeHubClient:
     def retrieve(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post_json("knowledge_hub", self.base_url, "/retrieve", payload)
 
+    def dantedash_import_packages(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post_json("knowledge_hub", self.base_url, "/dantedash/packages/import", payload, sanitize=True)
+
+    def dantedash_search_packages(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post_json("knowledge_hub", self.base_url, "/dantedash/packages/search", payload)
+
+    def dantedash_package_stats(self) -> dict[str, Any]:
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/stats")
+
+    def dantedash_package_items(self, *, limit: int | None = None, offset: int = 0) -> dict[str, Any]:
+        params = {"offset": offset}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/items", params=params)
+
+    def dantedash_package_item(self, item_id: str, *, include_private: bool = False) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            f"/dantedash/packages/items/{item_id}",
+            params={"include_private": include_private},
+            sanitize=not include_private,
+        )
+
     def actions_health(self) -> dict[str, Any]:
         return self._get_json("actions_bridge", self.actions_base_url, "/health", actions=True)
 
@@ -186,8 +210,9 @@ class KnowledgeHubClient:
         payload: dict[str, Any],
         *,
         actions: bool = False,
+        sanitize: bool = True,
     ) -> dict[str, Any]:
-        return self._request_json(surface, "POST", base_url, path, json=payload, actions=actions)
+        return self._request_json(surface, "POST", base_url, path, json=payload, actions=actions, sanitize=sanitize)
 
     def _request_json(
         self,

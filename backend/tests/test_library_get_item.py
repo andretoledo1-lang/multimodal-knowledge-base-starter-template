@@ -4,7 +4,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.kb import KnowledgeBase
-from app.routes.library import get_item
+from app.routes.library import get_item, kb_status
 
 
 class FakeCollection:
@@ -121,3 +121,30 @@ def test_library_get_item_requires_exactly_one_identifier() -> None:
         get_item(file_id="file-a", node_id="node-a", kb=FakeKB())
 
     assert exc.value.status_code == 400
+
+
+def test_kb_status_route_returns_public_backend_status() -> None:
+    class FakeKB:
+        def status(self):
+            return {
+                "mode": "knowledge_hub",
+                "primary_backend": "knowledge_hub",
+                "shadow_backend": None,
+                "chroma_fallback_enabled": True,
+                "chroma_available_as_fallback": True,
+                "writes_enabled": False,
+                "surfaces": {
+                    "text_search": "knowledge_hub",
+                    "chat_sources": "knowledge_hub",
+                    "stats": "knowledge_hub",
+                    "library": "knowledge_hub",
+                    "preview": "knowledge_hub",
+                    "image_query_search": "chroma_fallback",
+                },
+            }
+
+    response = kb_status(kb=FakeKB())
+
+    assert response.mode == "knowledge_hub"
+    assert response.surfaces["image_query_search"] == "chroma_fallback"
+    assert response.writes_enabled is False

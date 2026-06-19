@@ -41,6 +41,20 @@ class FakeBackend:
             )
         ]
 
+    def search_image(self, image_path, **_kwargs):
+        self.calls.append(f"search_image:{image_path}")
+        if self.fail:
+            raise KbBackendUnavailable("unavailable")
+        return [
+            SearchResult(
+                node_id="image-node-a",
+                score=0.91,
+                modality="image",
+                metadata={"id": "image-file-a", "original_name": "Image A", "modality": "image"},
+                snippet="visual alpha",
+            )
+        ]
+
     def delete_by_file_id(self, file_id: str) -> int:
         self.deleted.append(file_id)
         return 1
@@ -50,15 +64,45 @@ class FakeBackend:
 
 
 class FakeKnowledgeHubClient:
-    def retrieve(self, _payload):
+    def dantedash_search_packages(self, _payload):
         return {
             "ok": True,
             "data": {
                 "items": [
-                    {"id": "kh-a", "title": "A", "snippet": "alpha", "score": 0.9, "file_path": "/Users/a/secret"},
+                    {
+                        "node_id": "kh-a",
+                        "title": "A",
+                        "excerpt": "alpha",
+                        "score": 0.9,
+                        "metadata": {"id": "kh-a", "source_sha256": "sha-a", "file_path": "/Users/a/secret"},
+                    },
                     {"id": "kh-b", "title": "B", "snippet": "beta", "score": 0.8},
                     {"id": "kh-c", "title": "C", "snippet": "gamma", "score": 0.7},
                 ]
+            },
+        }
+
+    def dantedash_package_stats(self):
+        return {"ok": True, "data": {"total": 3, "by_modality": {"image": 1, "text": 2}}}
+
+    def dantedash_package_items(self, *, limit=None, offset=0):
+        del limit, offset
+        return {"ok": True, "data": {"items": [{"file_id": "kh-a", "original_name": "A"}], "total": 1}}
+
+    def dantedash_package_item(self, item_id, *, include_private=False):
+        metadata = {"id": item_id, "source_sha256": "sha-a", "modality": "image", "original_name": "A"}
+        if include_private:
+            metadata["file_path"] = "/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/visual-reference-assets/source-assets/a.jpg"
+        return {
+            "ok": True,
+            "data": {
+                "file_id": item_id,
+                "original_name": "A",
+                "modality": "image",
+                "upload_time": "",
+                "node_ids": [item_id],
+                "metadata": metadata,
+                "nodes": [{"node_id": item_id, "metadata": metadata, "snippet": "alpha"}],
             },
         }
 
@@ -104,6 +148,131 @@ def test_knowledge_hub_mode_falls_back_to_chroma_when_enabled() -> None:
     assert kh.calls == ["count"]
 
 
+def test_knowledge_hub_mode_serves_text_from_kh_without_chroma() -> None:
+    chroma = FakeBackend()
+    kh = FakeBackend()
+    gateway = KbGateway(
+        mode="knowledge_hub",
+        chroma=chroma,
+        knowledge_hub=kh,
+        chroma_fallback_enabled=True,
+    )
+
+    assert gateway.search_text("barry lyndon")[0].metadata["id"] == "file-a"
+    assert kh.calls == ["search_text:barry lyndon"]
+    assert chroma.calls == []
+
+
+def test_knowledge_hub_mode_falls_back_to_chroma_for_image_query() -> None:
+    chroma = FakeBackend()
+    kh = KnowledgeHubKbBackend(FakeKnowledgeHubClient())
+    gateway = KbGateway(
+        mode="knowledge_hub",
+        chroma=chroma,
+        knowledge_hub=kh,
+        chroma_fallback_enabled=True,
+    )
+
+    assert gateway.search_image("/tmp/query.jpg")[0].node_id == "image-node-a"
+    assert chroma.calls == ["search_image:/tmp/query.jpg"]
+
+
+def test_knowledge_hub_mode_raises_for_image_query_when_fallback_disabled() -> None:
+    gateway = KbGateway(
+        mode="knowledge_hub",
+        chroma=FakeBackend(),
+        knowledge_hub=KnowledgeHubKbBackend(FakeKnowledgeHubClient()),
+        chroma_fallback_enabled=False,
+    )
+
+    with pytest.raises(KbBackendUnavailable):
+        gateway.search_image("/tmp/query.jpg")
+
+
+def test_gateway_status_is_public_safe_for_knowledge_hub_primary() -> None:
+    gateway = KbGateway(
+        mode="knowledge_hub",
+        chroma=FakeBackend(),
+        knowledge_hub=FakeBackend(),
+        chroma_fallback_enabled=True,
+    )
+
+    status = gateway.status()
+
+    assert status == {
+        "mode": "knowledge_hub",
+        "primary_backend": "knowledge_hub",
+        "shadow_backend": None,
+        "chroma_fallback_enabled": True,
+        "chroma_available_as_fallback": True,
+        "writes_enabled": False,
+        "surfaces": {
+            "text_search": "knowledge_hub",
+            "chat_sources": "knowledge_hub",
+            "stats": "knowledge_hub",
+            "library": "knowledge_hub",
+            "preview": "knowledge_hub",
+            "image_query_search": "chroma_fallback",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("mode", "fallback_enabled", "expected"),
+    [
+        (
+            "chroma",
+            True,
+            {
+                "primary_backend": "chroma",
+                "shadow_backend": None,
+                "chroma_available_as_fallback": False,
+                "writes_enabled": True,
+                "image_query_search": "chroma",
+            },
+        ),
+        (
+            "dual",
+            True,
+            {
+                "primary_backend": "chroma",
+                "shadow_backend": "knowledge_hub",
+                "chroma_available_as_fallback": False,
+                "writes_enabled": True,
+                "image_query_search": "chroma",
+            },
+        ),
+        (
+            "knowledge_hub",
+            False,
+            {
+                "primary_backend": "knowledge_hub",
+                "shadow_backend": None,
+                "chroma_available_as_fallback": False,
+                "writes_enabled": False,
+                "image_query_search": "unavailable",
+            },
+        ),
+    ],
+)
+def test_gateway_status_modes(mode: str, fallback_enabled: bool, expected: dict[str, object]) -> None:
+    gateway = KbGateway(
+        mode=mode,
+        chroma=FakeBackend(),
+        knowledge_hub=FakeBackend(),
+        chroma_fallback_enabled=fallback_enabled,
+    )
+
+    status = gateway.status()
+
+    assert status["mode"] == mode
+    assert status["primary_backend"] == expected["primary_backend"]
+    assert status["shadow_backend"] == expected["shadow_backend"]
+    assert status["chroma_available_as_fallback"] is expected["chroma_available_as_fallback"]
+    assert status["writes_enabled"] is expected["writes_enabled"]
+    assert status["surfaces"]["image_query_search"] == expected["image_query_search"]
+
+
 def test_knowledge_hub_mode_raises_when_fallback_disabled() -> None:
     gateway = KbGateway(
         mode="knowledge_hub",
@@ -139,3 +308,16 @@ def test_knowledge_hub_backend_bounds_search_results_to_top_k() -> None:
 
     assert [result.node_id for result in results] == ["kh-a", "kh-b"]
     assert "file_path" not in results[0].metadata
+    assert results[0].metadata["source_sha256"] == "sha-a"
+
+
+def test_knowledge_hub_backend_serves_official_stats_and_listing() -> None:
+    backend = KnowledgeHubKbBackend(FakeKnowledgeHubClient())
+
+    assert backend.count() == 3
+    assert backend.count_by_modality() == {"image": 1, "text": 2}
+    items, total = backend.list_items()
+
+    assert total == 1
+    assert items[0]["file_id"] == "kh-a"
+    assert backend.get_item(file_id="kh-a")["metadata"]["source_sha256"] == "sha-a"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 from typing import Iterator
@@ -23,6 +24,21 @@ from .providers import ProviderError
 
 DEFAULT_CHAT_MODEL = CHAT_MODEL_DEEPSEEK
 logger = logging.getLogger("kb.chat.orchestration")
+ORDINAL_WORDS = {
+    1: "first",
+    2: "second",
+    3: "third",
+    4: "fourth",
+    5: "fifth",
+    6: "sixth",
+    7: "seventh",
+    8: "eighth",
+    9: "ninth",
+    10: "tenth",
+    11: "eleventh",
+    12: "twelfth",
+}
+YEAR_SUFFIX_RE = re.compile(r"^(?P<title>.+?)-(?P<year>(?:19|20)\d{2})(?:-\d+)?$")
 
 
 @dataclass
@@ -43,8 +59,11 @@ def build_grounded_context(
 
     for i, r in enumerate(results, 1):
         meta = r.metadata
-        name = r.display_name
+        stored_name = r.display_name
+        friendly_reference = friendly_source_reference(r, i)
         modality = r.modality
+        source_kind = _source_kind(r)
+        display_modality = source_kind if source_kind != "source" else modality
         loc = ""
         if modality == "pdf" and meta.get("page_start"):
             start = int(meta["page_start"])
@@ -55,11 +74,16 @@ def build_grounded_context(
         elif modality == "video" and meta.get("timestamp_seconds") is not None:
             loc = f" (@ {meta['timestamp_seconds']}s)"
 
-        descriptions.append(f"[{i}] {name}{loc} — {modality}, similarity {r.score:.0%}")
-        if modality in {"image", "pdf", "video"}:
+        descriptions.append(f"[{i}] {friendly_reference}{loc} — {display_modality}, similarity {r.score:.0%}")
+        if source_kind in {"image", "pdf", "video"}:
             visual_count += 1
         context_lines.append(f"Source [{i}]")
-        context_lines.append(f"Name: {name}{loc}")
+        context_lines.append(f"Friendly reference: {friendly_reference}{loc}")
+        context_lines.append(
+            "Use the friendly reference in the answer, adapted into the user's language. "
+            "Do not quote stored filenames or paths."
+        )
+        context_lines.append(f"Stored label: {stored_name}{loc}")
         context_lines.append(f"Modality: {modality}")
         if meta.get("vector_score") is not None:
             context_lines.append(f"Vector score: {meta['vector_score']}")
@@ -74,6 +98,67 @@ def build_grounded_context(
         context_lines.append("")
 
     return "\n".join(context_lines).strip(), descriptions, visual_count
+
+
+def friendly_source_reference(result: SearchResult, source_number: int) -> str:
+    """Build a compact human reference for a source card."""
+    meta = result.metadata
+    source_kind = _source_kind(result)
+    source_title = _source_title(meta, result.display_name)
+    ordinal = ORDINAL_WORDS.get(source_number, f"source {source_number}")
+    if source_kind == "image":
+        return f"the {ordinal} image, from {source_title}"
+    if source_kind == "video":
+        return f"the {ordinal} video source, from {source_title}"
+    if source_kind == "pdf":
+        return f"the {ordinal} PDF source, from {source_title}"
+    return f"source {source_number}, {source_title}"
+
+
+def _source_kind(result: SearchResult) -> str:
+    meta = result.metadata
+    artifact_type = str(meta.get("artifact_type") or "")
+    if (
+        result.modality == "image"
+        or artifact_type in {"visual_analysis_bundle", "visual_decoupage_bundle"}
+        or meta.get("linked_image_file_id")
+        or meta.get("preview_image_file_id")
+    ):
+        return "image"
+    if result.modality == "video":
+        return "video"
+    if result.modality == "pdf":
+        return "pdf"
+    return "source"
+
+
+def _source_title(meta: dict[str, Any], fallback: str) -> str:
+    for key in ("film_title", "title", "group", "dante_image_id", "original_name"):
+        value = meta.get(key)
+        if isinstance(value, str) and value.strip():
+            return _humanize_title(value)
+    return _humanize_title(fallback)
+
+
+def _humanize_title(value: str) -> str:
+    stem = value.strip().split("/")[-1].rsplit(".", 1)[0]
+    match = YEAR_SUFFIX_RE.match(stem)
+    if match:
+        stem = match.group("title")
+    stem = re.sub(r"-\d{3,}$", "", stem)
+    stem = stem.replace("_", "-").replace("--", "-")
+    words = [word for word in stem.split("-") if word]
+    if not words:
+        return value.strip()
+    small_words = {"a", "an", "and", "as", "da", "de", "do", "dos", "e", "of", "the"}
+    titled = [
+        word.upper() if len(word) <= 3 and word.isupper() else word.capitalize()
+        for word in words
+    ]
+    for idx, word in enumerate(titled):
+        if idx > 0 and words[idx].lower() in small_words:
+            titled[idx] = words[idx].lower()
+    return " ".join(titled)
 
 
 def _conversation_context_block(conversation_context: str | None) -> str:

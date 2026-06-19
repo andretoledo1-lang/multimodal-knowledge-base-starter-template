@@ -11,17 +11,31 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "dantedash_kh_import_missing.py"
 
 
-def test_import_missing_execute_is_blocked() -> None:
+def test_import_missing_execute_without_candidates_is_safe(tmp_path: Path) -> None:
+    audit = tmp_path / "audit.json"
+    audit.write_text(json.dumps({"rows": []}), encoding="utf-8")
+
     result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--execute"],
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--execute",
+            "--audit-summary",
+            str(audit),
+            "--output-dir",
+            str(tmp_path / "out"),
+        ],
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
-        check=False,
+        check=True,
     )
 
-    assert result.returncode != 0
-    assert "Execute is blocked" in result.stderr or "Execute is blocked" in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["dry_run"] is False
+    assert payload["execute_supported"] is True
+    assert payload["mutation_performed"] is False
+    assert payload["execution"]["status"] == "skipped"
 
 
 def test_import_missing_dry_run_writes_candidate_manifest(tmp_path: Path) -> None:
@@ -85,7 +99,7 @@ def test_import_missing_dry_run_writes_candidate_manifest(tmp_path: Path) -> Non
             "modality": "image",
             "artifact_type": "unknown",
             "package_key": "sha-a",
-            "blocked_reason": "requires_kh_granular_package_import_or_targeted_vector_backfill",
+            "planned_action": "import_through_kh_dantedash_packages_api",
         }
     ]
 

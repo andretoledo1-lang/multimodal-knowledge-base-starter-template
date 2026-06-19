@@ -161,10 +161,24 @@ class KnowledgeHubKbBackend:
         self.client = client
 
     def count(self) -> int:
-        raise KbBackendUnavailable("knowledge_hub_stats_not_available")
+        data = self._dantedash_stats()
+        try:
+            return int(data.get("total") or 0)
+        except (TypeError, ValueError) as exc:
+            raise KbBackendUnavailable("knowledge_hub_stats_malformed") from exc
 
     def count_by_modality(self) -> dict[str, int]:
-        raise KbBackendUnavailable("knowledge_hub_stats_not_available")
+        data = self._dantedash_stats()
+        by_modality = data.get("by_modality")
+        if not isinstance(by_modality, dict):
+            raise KbBackendUnavailable("knowledge_hub_stats_malformed")
+        counts: dict[str, int] = {}
+        for key, value in by_modality.items():
+            try:
+                counts[str(key)] = int(value)
+            except (TypeError, ValueError):
+                continue
+        return counts
 
     def search_text(
         self,
@@ -177,7 +191,7 @@ class KnowledgeHubKbBackend:
         payload: dict[str, Any] = {"query": query, "top_k": top_k}
         if modality_filter:
             payload["modality_filter"] = modality_filter
-        response = self.client.retrieve(payload)
+        response = self.client.dantedash_search_packages(payload)
         if not response.get("ok"):
             raise KbBackendUnavailable(str(response.get("error") or "knowledge_hub_unavailable"))
         data = response.get("data") if isinstance(response.get("data"), dict) else {}
@@ -198,24 +212,91 @@ class KnowledgeHubKbBackend:
         raise KbBackendUnavailable("knowledge_hub_image_search_not_available")
 
     def list_items(self, *, limit: int | None = None, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
-        raise KbBackendUnavailable("knowledge_hub_listing_not_available")
+        response = self.client.dantedash_package_items(limit=limit, offset=offset)
+        if not response.get("ok"):
+            raise KbBackendUnavailable(str(response.get("error") or "knowledge_hub_listing_unavailable"))
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        items = data.get("items") if isinstance(data, dict) else []
+        if not isinstance(items, list):
+            raise KbBackendUnavailable("knowledge_hub_listing_malformed")
+        try:
+            total = int(data.get("total") or len(items))
+        except (TypeError, ValueError):
+            total = len(items)
+        return [item for item in items if isinstance(item, dict)], total
 
     def get_item(self, *, file_id: str | None = None, node_id: str | None = None) -> dict[str, Any] | None:
-        raise KbBackendUnavailable("knowledge_hub_item_lookup_not_available")
+        item_id = file_id or node_id
+        if not item_id:
+            return None
+        response = self.client.dantedash_package_item(item_id, include_private=False)
+        if response.get("status_code") == 404:
+            return None
+        if not response.get("ok"):
+            raise KbBackendUnavailable(str(response.get("error") or "knowledge_hub_item_unavailable"))
+        data = response.get("data")
+        return dict(data) if isinstance(data, dict) else None
 
     def lookup_preview(self, file_id: str, *, timestamp_s: float | None = None) -> PreviewLookup:
-        raise KbBackendUnavailable("knowledge_hub_preview_not_available")
+        del timestamp_s
+        item = self._private_dantedash_item(file_id)
+        meta = dict(item.get("metadata") or {})
+        preview_id = meta.get("preview_image_file_id")
+        if isinstance(preview_id, str) and preview_id and preview_id != file_id:
+            preview_item = self._private_dantedash_item(preview_id)
+            preview_meta = dict(preview_item.get("metadata") or {})
+            preview_path = _private_preview_path_from_meta(preview_meta)
+            file_path = _private_file_path_from_meta(preview_meta)
+            if file_path is not None:
+                return PreviewLookup(
+                    path=file_path,
+                    metadata=preview_meta,
+                    upload_dir=_preview_upload_root(file_path),
+                    preview_path=preview_path,
+                )
+
+        file_path = _private_file_path_from_meta(meta)
+        if file_path is None:
+            raise KbBackendUnavailable("preview_file_missing")
+        return PreviewLookup(
+            path=file_path,
+            metadata=meta,
+            upload_dir=_preview_upload_root(file_path),
+            preview_path=_private_preview_path_from_meta(meta),
+        )
+
+    def _dantedash_stats(self) -> dict[str, Any]:
+        response = self.client.dantedash_package_stats()
+        if not response.get("ok"):
+            raise KbBackendUnavailable(str(response.get("error") or "knowledge_hub_stats_unavailable"))
+        data = response.get("data")
+        if not isinstance(data, dict):
+            raise KbBackendUnavailable("knowledge_hub_stats_malformed")
+        return data
+
+    def _private_dantedash_item(self, item_id: str) -> dict[str, Any]:
+        response = self.client.dantedash_package_item(item_id, include_private=True)
+        if response.get("status_code") == 404:
+            raise KbBackendUnavailable("item_not_found")
+        if not response.get("ok"):
+            raise KbBackendUnavailable(str(response.get("error") or "knowledge_hub_preview_unavailable"))
+        data = response.get("data")
+        if not isinstance(data, dict):
+            raise KbBackendUnavailable("knowledge_hub_item_malformed")
+        return data
 
 
 def _item_to_result(item: dict[str, Any], index: int) -> SearchResult:
-    metadata = sanitize_public_payload(dict(item))
+    nested_meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    metadata = sanitize_public_payload({**dict(item), **dict(nested_meta)})
     if not isinstance(metadata, dict):
         metadata = {}
-    item_id = _first_text(item, "id", "node_id", "chunk_id", "document_id") or f"kh-item-{index}"
-    file_id = _first_text(item, "file_id", "document_id", "id") or item_id
-    title = _first_text(item, "display_name", "title", "source_title", "document_title") or file_id
-    modality = _first_text(item, "modality", "media_type") or "text"
-    snippet = _first_text(item, "snippet", "text", "content", "chunk_text", "summary") or ""
+    item_id = _first_text(item, "node_id", "id", "chunk_id", "document_id") or f"kh-item-{index}"
+    file_id = _first_text(metadata, "id", "file_id", "document_id") or item_id
+    title = _first_text(metadata, "original_name", "display_name", "title", "source_title", "document_title")
+    title = title or _first_text(item, "display_name", "title", "source_title", "document_title") or file_id
+    modality = _first_text(metadata, "modality", "media_type") or _first_text(item, "modality", "media_type") or "text"
+    snippet = _first_text(item, "snippet", "excerpt", "text", "content", "chunk_text", "summary") or ""
     score = _first_number(item, "score", "rerank_score", "similarity", "vector_score")
     metadata.setdefault("id", file_id)
     metadata.setdefault("original_name", title)
@@ -250,3 +331,34 @@ def _preview_path_from_meta(meta: dict[str, Any]) -> Path | None:
     if not isinstance(preview_file_path, str) or not preview_file_path:
         return None
     return Path(preview_file_path)
+
+
+def _private_file_path_from_meta(meta: dict[str, Any]) -> Path | None:
+    for key in ("file_path", "preview_file_path", "source_path"):
+        value = meta.get(key)
+        if isinstance(value, str) and value:
+            return Path(value)
+    return None
+
+
+def _private_preview_path_from_meta(meta: dict[str, Any]) -> Path | None:
+    value = meta.get("preview_file_path")
+    if isinstance(value, str) and value:
+        return Path(value)
+    return None
+
+
+def _preview_upload_root(path: Path) -> Path:
+    resolved = path.expanduser().resolve()
+    known_roots = [
+        Path("/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/visual-reference-assets/source-assets"),
+        Path("/Users/vidigal/Library/CloudStorage/Dropbox/andre/inbox"),
+        Path("/Users/vidigal/codex/dantedash/uploads"),
+    ]
+    for root in known_roots:
+        try:
+            resolved.relative_to(root.resolve())
+        except ValueError:
+            continue
+        return root
+    return resolved.parent

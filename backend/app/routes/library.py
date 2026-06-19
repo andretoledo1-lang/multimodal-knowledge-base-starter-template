@@ -14,6 +14,7 @@ from ..schemas import (
     ItemDTO,
     ItemDetailResponse,
     ItemsResponse,
+    KbStatusResponse,
     StatsResponse,
     item_detail_to_dto,
     preview_url_for,
@@ -93,3 +94,8 @@ def stats(kb: KbGateway = Depends(get_kb_gateway)) -> StatsResponse:
         return StatsResponse(total=kb.count(), by_modality=kb.count_by_modality())
     except KbBackendUnavailable as exc:
         raise HTTPException(status_code=503, detail="Knowledge base backend unavailable") from exc
+
+
+@router.get("/kb/status", response_model=KbStatusResponse)
+def kb_status(kb: KbGateway = Depends(get_kb_gateway)) -> KbStatusResponse:
+    return KbStatusResponse(**kb.status())

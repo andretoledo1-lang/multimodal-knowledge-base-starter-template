@@ -182,6 +182,16 @@ class StatsResponse(BaseModel):
     by_modality: dict[str, int]
 
 
+class KbStatusResponse(BaseModel):
+    mode: str
+    primary_backend: str
+    shadow_backend: str | None = None
+    chroma_fallback_enabled: bool
+    chroma_available_as_fallback: bool
+    writes_enabled: bool
+    surfaces: dict[str, str]
+
+
 class DeleteResponse(BaseModel):
     deleted: int
 

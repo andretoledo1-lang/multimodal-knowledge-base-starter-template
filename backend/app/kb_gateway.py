@@ -64,6 +64,46 @@ class KbGateway:
     def chat_client_for_model(self, chat_model: str) -> Any:
         return self.chroma.kb.chat_client_for_model(chat_model)
 
+    @property
+    def is_knowledge_hub_primary(self) -> bool:
+        return self.mode == "knowledge_hub"
+
+    @property
+    def is_chroma_fallback_enabled(self) -> bool:
+        return self.is_knowledge_hub_primary and self.chroma_fallback_enabled
+
+    def status(self) -> dict[str, Any]:
+        """Return public-safe routing status for smoke checks and operators."""
+        primary_backend = "knowledge_hub" if self.mode == "knowledge_hub" else "chroma"
+        shadow_backend = "knowledge_hub" if self.mode == "dual" else None
+        if self.mode == "knowledge_hub":
+            surfaces = {
+                "text_search": "knowledge_hub",
+                "chat_sources": "knowledge_hub",
+                "stats": "knowledge_hub",
+                "library": "knowledge_hub",
+                "preview": "knowledge_hub",
+                "image_query_search": "chroma_fallback" if self.chroma_fallback_enabled else "unavailable",
+            }
+        else:
+            surfaces = {
+                "text_search": "chroma",
+                "chat_sources": "chroma",
+                "stats": "chroma",
+                "library": "chroma",
+                "preview": "chroma",
+                "image_query_search": "chroma",
+            }
+        return {
+            "mode": self.mode,
+            "primary_backend": primary_backend,
+            "shadow_backend": shadow_backend,
+            "chroma_fallback_enabled": self.chroma_fallback_enabled,
+            "chroma_available_as_fallback": self.is_chroma_fallback_enabled,
+            "writes_enabled": self.mode != "knowledge_hub",
+            "surfaces": surfaces,
+        }
+
     def count(self) -> int:
         return self._read("count")
 
