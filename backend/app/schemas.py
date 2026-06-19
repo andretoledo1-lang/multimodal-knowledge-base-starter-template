@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 
 from .chat_models import CHAT_MODEL_DEEPSEEK, ChatModelId
+from .knowledge_hub_client import sanitize_public_payload
 
 if TYPE_CHECKING:
     from .kb import SearchResult
@@ -270,9 +271,8 @@ def item_detail_to_dto(item: dict[str, Any]) -> ItemDetailResponse:
 
 def safe_metadata(meta: dict[str, Any]) -> dict[str, Any]:
     """Strip server-side metadata before returning API payloads."""
-    out = dict(meta)
-    out.pop("file_path", None)
-    return out
+    out = sanitize_public_payload(dict(meta))
+    return out if isinstance(out, dict) else {}
 
 
 def preview_url_for(meta: dict[str, Any]) -> str | None:

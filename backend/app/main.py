@@ -15,8 +15,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .deps import get_kb, get_settings
-from .routes import chat, chat_state, graph, ingest, library, preview, search, vault_index
+from .deps import get_kb_gateway, get_settings
+from .routes import chat, chat_state, graph, ingest, knowledge_hub, library, preview, search, vault_index
 
 logger = logging.getLogger("kb")
 
@@ -28,7 +28,7 @@ async def lifespan(_app: FastAPI):
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s — %(message)s",
     )
-    get_kb()  # fail fast if API key / Chroma broken
+    get_kb_gateway()  # fail fast if configured KB backend is invalid/broken
     logger.info("Knowledge Base ready.")
     yield
 
@@ -75,6 +75,7 @@ app.include_router(library.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")
 app.include_router(vault_index.router, prefix="/api")
 app.include_router(graph.router, prefix="/api")
+app.include_router(knowledge_hub.router, prefix="/api")
 
 
 # Static SPA mount for prod. In dev this directory doesn't exist, so we skip.

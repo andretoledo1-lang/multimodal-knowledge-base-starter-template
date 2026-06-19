@@ -71,6 +71,9 @@ def test_library_get_item_sanitizes_file_paths_and_links_visual_preview() -> Non
                     "id": "card-a",
                     "modality": "text",
                     "file_path": "/private/card.md",
+                    "card_json_path": "/Users/vidigal/Dante/card.json",
+                    "decoupage_markdown_path": "/Users/vidigal/Dante/decoupage.md",
+                    "source_url": "http://internal.local/secret",
                     "preview_image_file_id": "dante_visual_img_a",
                 },
                 "nodes": [
@@ -81,6 +84,7 @@ def test_library_get_item_sanitizes_file_paths_and_links_visual_preview() -> Non
                             "id": "card-a",
                             "modality": "text",
                             "file_path": "/private/card.md",
+                            "card_markdown_path": "/Users/vidigal/Dante/card.md",
                         },
                     }
                 ],
@@ -90,7 +94,11 @@ def test_library_get_item_sanitizes_file_paths_and_links_visual_preview() -> Non
 
     assert response.preview_url == "/api/preview/dante_visual_img_a"
     assert "file_path" not in response.metadata
+    assert "card_json_path" not in response.metadata
+    assert "decoupage_markdown_path" not in response.metadata
+    assert "source_url" not in response.metadata
     assert "file_path" not in response.nodes[0].metadata
+    assert "card_markdown_path" not in response.nodes[0].metadata
 
 
 def test_library_get_item_missing_returns_404() -> None:

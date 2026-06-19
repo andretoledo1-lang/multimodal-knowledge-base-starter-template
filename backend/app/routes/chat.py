@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from ..chat_store import ChatStore, ChatStoreNotFound
-from ..deps import get_chat_store, get_kb
-from ..kb import KnowledgeBase
+from ..deps import get_chat_store, get_kb_gateway
+from ..kb_backends import KbBackendUnavailable
+from ..kb_gateway import KbGateway
 from ..providers import ProviderError
 from ..rag import GroundedAnswer, answer_with_vision
 from ..schemas import ChatRequest, search_result_to_dto
@@ -30,7 +31,7 @@ def _sse(event: str | None, data: str) -> str:
     return f"{prefix}data: {data}\n\n"
 
 
-def _stream(kb: KnowledgeBase, req: ChatRequest, store: ChatStore) -> Iterator[str]:
+def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
     token_count = 0
     final: GroundedAnswer | None = None
     persisted_user_id: str | None = None
@@ -75,9 +76,14 @@ def _stream(kb: KnowledgeBase, req: ChatRequest, store: ChatStore) -> Iterator[s
         )
         yield _sse("done", "{}")
         return
+    except KbBackendUnavailable:
+        logger.exception("Chat knowledge base backend unavailable")
+        yield _sse("error", json.dumps({"message": "Knowledge base backend unavailable."}))
+        yield _sse("done", "{}")
+        return
     except Exception as e:  # noqa: BLE001
         logger.exception("Chat stream failed")
-        yield _sse("error", json.dumps({"message": str(e)}))
+        yield _sse("error", json.dumps({"message": "Chat failed before a grounded answer could be produced."}))
         yield _sse("done", "{}")
         return
 
@@ -120,7 +126,7 @@ def _stream(kb: KnowledgeBase, req: ChatRequest, store: ChatStore) -> Iterator[s
 @router.post("/chat")
 def chat(
     req: ChatRequest,
-    kb: KnowledgeBase = Depends(get_kb),
+    kb: KbGateway = Depends(get_kb_gateway),
     store: ChatStore = Depends(get_chat_store),
 ) -> StreamingResponse:
     if req.thread_id:
