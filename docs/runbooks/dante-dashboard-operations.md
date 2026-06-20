@@ -35,8 +35,8 @@ existing aliases and Electron health checks keep working.
   bridge, KB catalog, topology, retrieval, Graph, Vault Index, and multimodal
   Chroma search.
 - DanteDash KB reads: KH-native for text search, chat source cards, stats,
-  library, and previews; Chroma remains available as fallback for image-query
-  search and rollback.
+  library, previews, and image-query search; Chroma fallback is disabled by
+  default and kept only as an explicit rollback mode.
 
 The backend process is the only service that should read provider credentials.
 MCP clients and launchers must not receive raw provider secrets.
@@ -62,11 +62,11 @@ Manual foreground start:
 /Users/vidigal/codex/dantedash/scripts/start-dante-multimodal-rag.sh
 ```
 
-The launcher defaults to KH-native reads with Chroma fallback:
+The launcher defaults to KH-native reads with Chroma fallback disabled:
 
 ```bash
 DANTEDASH_KB_BACKEND=knowledge_hub
-DANTEDASH_CHROMA_FALLBACK_ENABLED=true
+DANTEDASH_CHROMA_FALLBACK_ENABLED=false
 ```
 
 To temporarily run the old Chroma-primary mode for a session:
@@ -136,9 +136,11 @@ archiving a temporary thread under the default project. It does not ingest,
 delete, clear, or reindex KB content.
 
 The smoke script now expects `/api/kb/status` to report
-`mode=knowledge_hub`, `chroma_available_as_fallback=true`, and
-`image_query_search=chroma_fallback`. Override with
-`DANTE_EXPECTED_KB_BACKEND=chroma` only when intentionally validating rollback.
+`mode=knowledge_hub`, `chroma_available_as_fallback=false`, and
+`image_query_search=knowledge_hub`. Override with
+`DANTEDASH_CHROMA_FALLBACK_ENABLED=true` for temporary fallback testing, or
+`DANTE_EXPECTED_KB_BACKEND=chroma` only when intentionally validating
+Chroma-primary rollback.
 
 The same smoke script checks `/api/graph/health`. Missing external GraphML is a
 warning by default so unrelated dashboard health still passes. Use strict graph

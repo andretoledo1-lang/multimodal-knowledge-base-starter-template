@@ -51,6 +51,7 @@ def test_cutover_score_perfect_fixture_passes_gate() -> None:
     assert result.passed is True
     assert result.decision == "go_ready_waiting_for_go"
     assert result.hard_cap is None
+    assert result.next_actions == []
 
 
 def test_no_leak_failure_caps_below_gate() -> None:

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from app.kb_backends import KbBackendUnavailable, PreviewLookup
+from app.kb_backends import KbBackendUnavailable, PreviewLookup, _preview_upload_root
 from app.routes.preview import _lookup_file
 
 
@@ -46,3 +46,22 @@ def test_lookup_file_ignores_missing_generated_preview(tmp_path: Path) -> None:
 
     assert lookup.path == source_path.resolve()
     assert lookup.preview_path is None
+
+
+def test_lookup_file_refuses_path_outside_preview_roots(tmp_path: Path) -> None:
+    source_path = tmp_path / "secret.jpg"
+    source_path.write_bytes(b"fake")
+    upload_root = tmp_path / "uploads"
+    upload_root.mkdir()
+
+    with pytest.raises(HTTPException) as exc:
+        _lookup_file(MissingGeneratedPreviewGateway(upload_root, source_path, source_path), "img-a")
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail == "File not available"
+
+
+def test_preview_upload_root_does_not_trust_unknown_file_parent(tmp_path: Path) -> None:
+    root = _preview_upload_root(tmp_path / "attacker-controlled" / "secret.jpg")
+
+    assert root == Path("/Users/vidigal/codex/dantedash/uploads")

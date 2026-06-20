@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .deps import get_kb_gateway, get_settings
+from .deps import get_kb_gateway, get_knowledge_hub_client, get_settings
 from .routes import chat, chat_state, graph, ingest, knowledge_hub, library, preview, search, vault_index
 
 logger = logging.getLogger("kb")
@@ -30,7 +30,14 @@ async def lifespan(_app: FastAPI):
     )
     get_kb_gateway()  # fail fast if configured KB backend is invalid/broken
     logger.info("Knowledge Base ready.")
-    yield
+    try:
+        yield
+    finally:
+        try:
+            get_knowledge_hub_client().close()
+        finally:
+            get_knowledge_hub_client.cache_clear()
+            get_kb_gateway.cache_clear()
 
 
 app = FastAPI(

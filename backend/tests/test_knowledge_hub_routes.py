@@ -126,7 +126,7 @@ class FakeSettings:
 def make_client(fake_client=None) -> TestClient:
     app = FastAPI()
     app.include_router(knowledge_hub.router, prefix="/api")
-    app.dependency_overrides[knowledge_hub.get_kb] = lambda: FakeKB()
+    app.dependency_overrides[knowledge_hub.get_kb_gateway] = lambda: FakeKB()
     app.dependency_overrides[knowledge_hub.get_settings] = lambda: FakeSettings()
     app.dependency_overrides[knowledge_hub.get_knowledge_hub_client] = lambda: fake_client or FakeClient()
     return TestClient(app)

@@ -11,8 +11,8 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from ..deps import Settings, get_kb, get_knowledge_hub_client, get_settings
-from ..kb import KnowledgeBase
+from ..deps import Settings, get_kb_gateway, get_knowledge_hub_client, get_settings
+from ..kb_gateway import KbGateway
 from ..knowledge_hub_client import READ_ONLY_ACTION_PATHS, KnowledgeHubClient, sanitize_public_payload
 from ..schemas import search_result_to_dto
 from .graph import get_graph_explorer
@@ -44,7 +44,7 @@ class FederatedSearchRequest(BaseModel):
 
 @router.get("/health")
 async def health(
-    kb: KnowledgeBase = Depends(get_kb),
+    kb: KbGateway = Depends(get_kb_gateway),
     settings: Settings = Depends(get_settings),
     client: KnowledgeHubClient = Depends(get_knowledge_hub_client),
 ) -> dict[str, Any]:
@@ -105,7 +105,7 @@ async def retrieve(
 @router.post("/federated-search")
 async def federated_search(
     request: FederatedSearchRequest,
-    kb: KnowledgeBase = Depends(get_kb),
+    kb: KbGateway = Depends(get_kb_gateway),
     client: KnowledgeHubClient = Depends(get_knowledge_hub_client),
 ) -> dict[str, Any]:
     surfaces = _dedupe_surfaces(request.surfaces)
@@ -132,7 +132,7 @@ async def federated_search(
     }
 
 
-def _dashboard_kb_status(kb: KnowledgeBase) -> dict[str, Any]:
+def _dashboard_kb_status(kb: KbGateway) -> dict[str, Any]:
     try:
         return {
             "ok": True,
@@ -231,7 +231,7 @@ def _group(surface: FederatedSurface, *, ok: bool, results: list[dict[str, Any]]
     }
 
 
-def _search_multimodal(kb: KnowledgeBase, query: str, top_k: int) -> dict[str, Any]:
+def _search_multimodal(kb: KbGateway, query: str, top_k: int) -> dict[str, Any]:
     try:
         results = kb.search_text(query, top_k=top_k)
         normalized = []

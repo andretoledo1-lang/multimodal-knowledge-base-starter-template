@@ -6,6 +6,7 @@ when its visual package APIs do not yet satisfy the DanteDash DTO contract.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -194,7 +195,7 @@ class KnowledgeHubKbBackend:
         response = self.client.dantedash_search_packages(payload)
         if not response.get("ok"):
             raise KbBackendUnavailable(str(response.get("error") or "knowledge_hub_unavailable"))
-        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        data = _kh_data_or_unavailable(response, "knowledge_hub_search_unavailable")
         items = data.get("items") if isinstance(data, dict) else []
         if not isinstance(items, list):
             raise KbBackendUnavailable("knowledge_hub_items_malformed")
@@ -209,7 +210,33 @@ class KnowledgeHubKbBackend:
         modality_filter: list[str] | None = None,
         on_progress: ProgressCallback = _noop,
     ) -> list[SearchResult]:
-        raise KbBackendUnavailable("knowledge_hub_image_search_not_available")
+        limit = max(1, min(int(top_k), 50))
+        request_top_k = max(1, min(limit * 4 if modality_filter else limit, 50))
+        last_error = "knowledge_hub_image_search_unavailable"
+        data: dict[str, Any] | None = None
+        for attempt in range(2):
+            response = self.client.dantedash_search_packages_by_image(image_path, top_k=request_top_k)
+            if not response.get("ok"):
+                last_error = str(response.get("error") or last_error)
+            else:
+                try:
+                    data = _kh_data_or_unavailable(response, last_error)
+                    break
+                except KbBackendUnavailable as exc:
+                    last_error = str(exc) or last_error
+            if attempt == 0:
+                time.sleep(0.5)
+        if data is None:
+            raise KbBackendUnavailable(last_error)
+        items = data.get("items") if isinstance(data, dict) else []
+        if not isinstance(items, list):
+            raise KbBackendUnavailable("knowledge_hub_image_items_malformed")
+        bounded_items = [item for item in items if isinstance(item, dict)]
+        results = [_item_to_result(item, index) for index, item in enumerate(bounded_items)]
+        if modality_filter:
+            allowed = {str(modality).strip().lower() for modality in modality_filter if str(modality).strip()}
+            results = [result for result in results if result.modality.lower() in allowed]
+        return results[:limit]
 
     def list_items(self, *, limit: int | None = None, offset: int = 0) -> tuple[list[dict[str, Any]], int]:
         response = self.client.dantedash_package_items(limit=limit, offset=offset)
@@ -269,10 +296,7 @@ class KnowledgeHubKbBackend:
         response = self.client.dantedash_package_stats()
         if not response.get("ok"):
             raise KbBackendUnavailable(str(response.get("error") or "knowledge_hub_stats_unavailable"))
-        data = response.get("data")
-        if not isinstance(data, dict):
-            raise KbBackendUnavailable("knowledge_hub_stats_malformed")
-        return data
+        return _kh_data_or_unavailable(response, "knowledge_hub_stats_unavailable")
 
     def _private_dantedash_item(self, item_id: str) -> dict[str, Any]:
         response = self.client.dantedash_package_item(item_id, include_private=True)
@@ -308,6 +332,16 @@ def _item_to_result(item: dict[str, Any], index: int) -> SearchResult:
         metadata=metadata,
         snippet=snippet,
     )
+
+
+def _kh_data_or_unavailable(response: dict[str, Any], default_error: str) -> dict[str, Any]:
+    data = response.get("data")
+    if not isinstance(data, dict):
+        raise KbBackendUnavailable(default_error)
+    status = str(data.get("status") or "ok").strip().lower()
+    if status not in {"ok", "indexed", "dry_run"}:
+        raise KbBackendUnavailable(status or default_error)
+    return data
 
 
 def _first_text(item: dict[str, Any], *keys: str) -> str | None:
@@ -361,4 +395,4 @@ def _preview_upload_root(path: Path) -> Path:
         except ValueError:
             continue
         return root
-    return resolved.parent
+    return Path("/Users/vidigal/codex/dantedash/uploads")

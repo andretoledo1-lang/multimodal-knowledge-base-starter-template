@@ -1,6 +1,8 @@
 """Read-only Knowledge Hub HTTP client for the DanteDash cockpit."""
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -99,6 +101,7 @@ class KnowledgeHubClient:
         self.base_url = base_url.rstrip("/")
         self.actions_base_url = actions_base_url.rstrip("/")
         self.actions_bearer_token = actions_bearer_token
+        self.timeout_s = timeout_s
         self._http = http_client or httpx.Client(timeout=timeout_s, follow_redirects=False)
 
     def health(self) -> dict[str, Any]:
@@ -119,6 +122,23 @@ class KnowledgeHubClient:
 
     def dantedash_search_packages(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post_json("knowledge_hub", self.base_url, "/dantedash/packages/search", payload)
+
+    def dantedash_search_packages_by_image(self, image_path: str | Path, *, top_k: int = 5) -> dict[str, Any]:
+        path = Path(image_path)
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        try:
+            with path.open("rb") as handle:
+                return self._request_json(
+                    "knowledge_hub",
+                    "POST",
+                    self.base_url,
+                    "/dantedash/packages/search-image",
+                    data={"top_k": str(max(1, min(int(top_k), 50)))},
+                    files={"file": (path.name or "query.jpg", handle, content_type)},
+                    timeout_s=max(self.timeout_s, 15.0),
+                )
+        except (OSError, ValueError):
+            return _unavailable("knowledge_hub", "image_query_file_unavailable")
 
     def dantedash_package_stats(self) -> dict[str, Any]:
         return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/stats")
@@ -223,8 +243,11 @@ class KnowledgeHubClient:
         *,
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+        files: dict[str, Any] | None = None,
         actions: bool = False,
         sanitize: bool = True,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         headers: dict[str, str] = {}
         if actions and self.actions_bearer_token:
@@ -235,7 +258,10 @@ class KnowledgeHubClient:
                 f"{base_url.rstrip('/')}/{path.lstrip('/')}",
                 params=params,
                 json=json,
+                data=data,
+                files=files,
                 headers=headers,
+                timeout=timeout_s,
             )
         except httpx.TimeoutException:
             return _unavailable(surface, "request_timeout")

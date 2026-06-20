@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .kb import KnowledgeBase, ProgressCallback, SearchResult, _noop
 from .kb_backends import (
@@ -26,16 +26,25 @@ class KbGateway:
         self,
         *,
         mode: str,
-        chroma: ChromaKbBackend,
+        chroma: ChromaKbBackend | Callable[[], ChromaKbBackend],
         knowledge_hub: KnowledgeHubKbBackend,
         chroma_fallback_enabled: bool = True,
     ) -> None:
         if mode not in VALID_BACKEND_MODES:
             raise ValueError(f"Invalid DANTEDASH_KB_BACKEND={mode!r}")
         self.mode = mode
-        self.chroma = chroma
+        self._chroma = chroma
+        self._chroma_instance: Any | None = None if callable(chroma) else chroma
         self.knowledge_hub = knowledge_hub
         self.chroma_fallback_enabled = chroma_fallback_enabled
+
+    @property
+    def chroma(self) -> ChromaKbBackend:
+        if self._chroma_instance is None:
+            if not callable(self._chroma):
+                raise KbBackendUnavailable("chroma_backend_unavailable")
+            self._chroma_instance = self._chroma()
+        return self._chroma_instance
 
     @property
     def chroma_kb(self) -> KnowledgeBase:
@@ -83,7 +92,7 @@ class KbGateway:
                 "stats": "knowledge_hub",
                 "library": "knowledge_hub",
                 "preview": "knowledge_hub",
-                "image_query_search": "chroma_fallback" if self.chroma_fallback_enabled else "unavailable",
+                "image_query_search": "knowledge_hub",
             }
         else:
             surfaces = {

@@ -4,11 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_URL="${DANTE_MULTIMODAL_API_BASE_URL:-http://127.0.0.1:8035}"
 FRONTEND_URL="${DANTE_MULTIMODAL_DASHBOARD_URL:-http://127.0.0.1:5173}"
+KH_BASE_URL="${KNOWLEDGE_HUB_BASE_URL:-http://127.0.0.1:8080}"
 EXPECTED_TOTAL="${DANTE_MULTIMODAL_EXPECTED_TOTAL:-8099}"
 EXPECTED_IMAGES="${DANTE_MULTIMODAL_EXPECTED_IMAGES:-2231}"
 EXPECTED_TEXTS="${DANTE_MULTIMODAL_EXPECTED_TEXTS:-4187}"
 EXPECTED_VIDEOS="${DANTE_MULTIMODAL_EXPECTED_VIDEOS:-1681}"
 EXPECTED_DECOUPAGE="${DANTE_MULTIMODAL_EXPECTED_DECOUPAGE:-2093}"
+IMAGE_QUERY_SMOKE_FILE="${DANTE_IMAGE_QUERY_SMOKE_FILE:-/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/visual-reference-assets/source-assets/film-stills/aftersun-2022/aftersun-2022-001.jpg}"
 EXPECTED_KB_BACKEND="${DANTE_EXPECTED_KB_BACKEND:-knowledge_hub}"
 DANTE_GRAPH_STRICT_SMOKE="${DANTE_GRAPH_STRICT_SMOKE:-0}"
 DANTE_KH_STRICT_SMOKE="${DANTE_KH_STRICT_SMOKE:-${KNOWLEDGE_HUB_STRICT_SMOKE:-0}}"
@@ -20,6 +22,12 @@ source "${ROOT_DIR}/scripts/dante_kb_runtime_env.sh"
 
 DEFAULT_EXPECTED_CHROMA_FALLBACK="$(dante_default_chroma_fallback_for_backend "${EXPECTED_KB_BACKEND}")"
 EXPECTED_CHROMA_FALLBACK="${DANTE_EXPECTED_CHROMA_FALLBACK:-${DEFAULT_EXPECTED_CHROMA_FALLBACK}}"
+if [[ "${EXPECTED_KB_BACKEND}" == "knowledge_hub" ]]; then
+  DEFAULT_EXPECTED_IMAGE_QUERY_BACKEND="knowledge_hub"
+else
+  DEFAULT_EXPECTED_IMAGE_QUERY_BACKEND="chroma"
+fi
+EXPECTED_IMAGE_QUERY_BACKEND="${DANTE_EXPECTED_IMAGE_QUERY_BACKEND:-${DEFAULT_EXPECTED_IMAGE_QUERY_BACKEND}}"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -74,9 +82,40 @@ image_query_backend="$(
   || fail "unexpected KB backend ${kb_backend}, expected ${EXPECTED_KB_BACKEND}"
 [[ "${kb_fallback}" == "${EXPECTED_CHROMA_FALLBACK}" ]] \
   || fail "unexpected Chroma fallback ${kb_fallback}, expected ${EXPECTED_CHROMA_FALLBACK}"
-if [[ "${EXPECTED_KB_BACKEND}" == "knowledge_hub" ]]; then
-  [[ "${image_query_backend}" == "chroma_fallback" ]] \
-    || fail "image-query search is ${image_query_backend}, expected chroma_fallback"
+[[ "${image_query_backend}" == "${EXPECTED_IMAGE_QUERY_BACKEND}" ]] \
+  || fail "image-query search is ${image_query_backend}, expected ${EXPECTED_IMAGE_QUERY_BACKEND}"
+
+if [[ "${EXPECTED_IMAGE_QUERY_BACKEND}" == "knowledge_hub" ]]; then
+  [[ -f "${IMAGE_QUERY_SMOKE_FILE}" ]] || fail "image-query smoke file missing: ${IMAGE_QUERY_SMOKE_FILE}"
+  tmp_payload="$(mktemp)"
+  if ! curl -fsS --max-time 30 \
+    -X POST \
+    -F "file=@${IMAGE_QUERY_SMOKE_FILE}" \
+    -F "top_k=5" \
+    "${BACKEND_URL}/api/search/image" >"${tmp_payload}"; then
+    rm -f "${tmp_payload}"
+    fail "image-query KH smoke failed"
+  fi
+  if ! image_query_check="$(python3 - "${tmp_payload}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+results = payload.get("results") or []
+if not results:
+    raise SystemExit("image-query returned no results")
+first = results[0]
+node_id = first.get("node_id") or first.get("id") or ""
+if not node_id:
+    raise SystemExit("image-query first result missing node id")
+print(f"image_query_results={len(results)} first={node_id}")
+PY
+  )"; then
+    rm -f "${tmp_payload}"
+    fail "image-query KH smoke failed"
+  fi
+  rm -f "${tmp_payload}"
 fi
 
 graph_health_json="$(curl -fsS --max-time 5 "${BACKEND_URL}/api/graph/health")" || fail "graph health endpoint is unavailable"
@@ -137,8 +176,47 @@ else
   fi
 fi
 
-decoupage_check="$(
-  cd "${ROOT_DIR}/backend" && EXPECTED_DECOUPAGE="${EXPECTED_DECOUPAGE}" "${UV_BIN}" run python - <<'PY'
+if [[ "${EXPECTED_KB_BACKEND}" == "knowledge_hub" ]]; then
+  decoupage_check="$(
+    EXPECTED_DECOUPAGE="${EXPECTED_DECOUPAGE}" KH_BASE_URL="${KH_BASE_URL}" python3 - <<'PY'
+import json
+import os
+import urllib.request
+
+base_url = os.environ["KH_BASE_URL"].rstrip("/")
+expected = int(os.environ["EXPECTED_DECOUPAGE"])
+
+def get_json(path: str) -> dict:
+    with urllib.request.urlopen(f"{base_url}{path}", timeout=5) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+stats = get_json("/dantedash/packages/stats")
+by_artifact = stats.get("by_artifact_type") or {}
+count = int(by_artifact.get("visual_decoupage_bundle") or 0)
+if count != expected:
+    raise SystemExit(f"unexpected decoupage count {count}, expected {expected}")
+
+sample_id = "dante_visual_decoupage_0d25ee0747336d6011c0e137427b6aca"
+sample = get_json(f"/dantedash/packages/items/{sample_id}")
+meta = sample.get("metadata") or {}
+linked = "dante_visual_img_0d25ee0747336d6011c0e137427b6aca"
+expected_meta = {
+    "dataset_id": "dante-visual-reference-assets",
+    "artifact_type": "visual_decoupage_bundle",
+    "schema": "decoupage_sidecar",
+    "dante_image_id": "aftersun-2022-001",
+    "linked_image_file_id": linked,
+    "preview_image_file_id": linked,
+}
+for key, expected_value in expected_meta.items():
+    if meta.get(key) != expected_value:
+        raise SystemExit(f"sample decoupage metadata mismatch {key}: {meta.get(key)!r}")
+print(f"decoupage={count} sample={sample_id} source=knowledge_hub")
+PY
+  )" || fail "decoupage KH package check failed"
+else
+  decoupage_check="$(
+    cd "${ROOT_DIR}/backend" && EXPECTED_DECOUPAGE="${EXPECTED_DECOUPAGE}" "${UV_BIN}" run python - <<'PY'
 import os
 from app.deps import get_kb
 
@@ -167,9 +245,10 @@ expected_meta = {
 for key, expected_value in expected_meta.items():
     if meta.get(key) != expected_value:
         raise SystemExit(f"sample decoupage metadata mismatch {key}: {meta.get(key)!r}")
-print(f"decoupage={len(ids)} sample={sample_id}")
+print(f"decoupage={len(ids)} sample={sample_id} source=chroma")
 PY
-)" || fail "decoupage Chroma package check failed"
+  )" || fail "decoupage Chroma package check failed"
+fi
 
 curl -fsSI --max-time 5 "${FRONTEND_URL}/" >/dev/null || fail "frontend is unavailable"
 
@@ -215,7 +294,11 @@ archived="$(
 
 note "workspace=${ROOT_DIR}"
 note "backend=${BACKEND_URL} total=${total} image=${images} text=${texts} video=${videos}"
-note "kb_backend=${kb_backend} chroma_fallback=${kb_fallback} image_query=${image_query_backend}"
+if [[ -n "${image_query_check:-}" ]]; then
+  note "kb_backend=${kb_backend} chroma_fallback=${kb_fallback} image_query=${image_query_backend} ${image_query_check}"
+else
+  note "kb_backend=${kb_backend} chroma_fallback=${kb_fallback} image_query=${image_query_backend}"
+fi
 note "graph=${graph_source:-unavailable} source_exists=${graph_exists} strict=${DANTE_GRAPH_STRICT_SMOKE}"
 note "knowledge_hub api=${kh_api_ok} actions=${kh_actions_ok} strict=${kh_strict_expected}"
 note "${decoupage_check}"

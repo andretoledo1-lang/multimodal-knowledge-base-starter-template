@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import httpx
 
 from app.knowledge_hub_client import KnowledgeHubClient, sanitize_public_payload
@@ -86,6 +88,53 @@ def test_actions_openapi_filters_to_read_only_operations() -> None:
         {"method": "GET", "path": "/health", "operation_id": "health", "summary": "Health"},
         {"method": "POST", "path": "/retrieve", "operation_id": "retrieve", "summary": "Retrieve"},
     ]
+
+
+def test_dantedash_image_search_posts_multipart_file(tmp_path: Path) -> None:
+    query_image = tmp_path / "query.jpg"
+    query_image.write_bytes(b"fake-image")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/dantedash/packages/search-image"
+        assert "multipart/form-data" in request.headers["content-type"]
+        assert request.extensions["timeout"]["read"] == 15.0
+        body = request.read()
+        assert b'name=\"top_k\"' in body
+        assert b"3" in body
+        assert b"query.jpg" in body
+        return httpx.Response(
+            200,
+            json={
+                "status": "ok",
+                "items": [
+                    {
+                        "node_id": "kh-image-a",
+                        "metadata": {"id": "kh-image-a", "file_path": "/Users/vidigal/private.jpg"},
+                    }
+                ],
+            },
+        )
+
+    result = make_client(handler).dantedash_search_packages_by_image(query_image, top_k=3)
+
+    assert result["ok"] is True
+    assert result["data"]["items"][0]["metadata"] == {"id": "kh-image-a"}
+
+
+def test_dantedash_image_search_missing_file_returns_public_error(tmp_path: Path) -> None:
+    result = make_client(lambda _request: httpx.Response(500)).dantedash_search_packages_by_image(
+        tmp_path / "missing.jpg",
+        top_k=3,
+    )
+
+    assert result == {
+        "ok": False,
+        "surface": "knowledge_hub",
+        "status": "unavailable",
+        "status_code": None,
+        "error": "image_query_file_unavailable",
+    }
 
 
 def test_sanitize_public_payload_removes_sensitive_keys_and_paths() -> None:

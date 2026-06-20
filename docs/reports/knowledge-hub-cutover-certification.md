@@ -1,31 +1,17 @@
 # Knowledge Hub Cutover Certification
 
-- Run id: `kh-native-dual-runtime-20260619T235730Z`
-- Generated at: `2026-06-19T23:58:21.041899+00:00`
-- Final score: `0.9495` / gate `0.89`
+- Run id: `kh-native-image-query-final5-20260620T062441Z`
+- Generated at: `2026-06-20T06:24:55.503630+00:00`
+- Final score: `0.9947` / gate `0.89`
 - Decision: `go_ready_waiting_for_go`
-- Recommendation: GO-ready, waiting for Andre GO. Chroma has not been disabled.
-
-## GO Runtime Activation
-
-Andre gave GO for dual/KH-native operation on 2026-06-19 with one explicit
-boundary: do not delete or disable Chroma until the image-query search path is
-decided. DanteDash now defaults its launcher to `knowledge_hub` reads with
-`DANTEDASH_CHROMA_FALLBACK_ENABLED=true`.
-
-Runtime surface ownership for this pass:
-
-- Text search: Knowledge Hub/Qdrant.
-- Chat retrieval and source cards: Knowledge Hub/Qdrant package search.
-- Stats, library item lookup, and previews: Knowledge Hub package DTOs.
-- Image-query search: Chroma fallback, intentionally preserved.
-- Writes, clear, delete, ingest: disabled while KH-native read mode is active.
+- Recommendation: GO-ready for KH-native reads with Chroma fallback disabled.
 
 ## Baseline
 
 - DanteDash rows: `8099`
 - DanteDash modalities: `{"image": 2231, "text": 4187, "video": 1681}`
 - Chroma to KH relationships: `{"matched": 8099}`
+- Runtime fallback enabled: `False`
 - KH active visual collection: `visual_memory__voyage_multimodal_3_5_1024`
 - KH active visual points: `9849`
 - KH visual manifest assets: `9853` across `13` manifests
@@ -37,10 +23,10 @@ Runtime surface ownership for this pass:
 | inventory_coverage | 0.16 | 1.0000 |
 | package_integrity | 0.14 | 1.0000 |
 | vector_provenance | 0.10 | 1.0000 |
-| search_parity | 0.16 | 1.0000 |
-| preview_dto_library_stats | 0.12 | 0.8000 |
+| search_parity | 0.16 | 0.9667 |
+| preview_dto_library_stats | 0.12 | 1.0000 |
 | chat_context_sources | 0.12 | 1.0000 |
-| dual_fallback_independence | 0.10 | 0.7347 |
+| dual_fallback_independence | 0.10 | 1.0000 |
 | safety_no_leak | 0.10 | 1.0000 |
 
 ## Hard Caps And Blockers
@@ -58,6 +44,7 @@ Runtime surface ownership for this pass:
 | film_style | 5 | 5 | 1.0000 | True |
 | decoupage_language | 5 | 5 | 1.0000 | True |
 | video_keyframe | 5 | 5 | 1.0000 | True |
+| image_query_sample_1 | 5 | 5 | 0.8000 | True |
 
 ## Import Finding
 
@@ -68,4 +55,4 @@ Runtime surface ownership for this pass:
 
 ## Next Actions
 
-- Reduce Chroma fallback dependence in dual mode and rerun telemetry.
+- none

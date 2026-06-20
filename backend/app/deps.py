@@ -125,8 +125,8 @@ def get_settings() -> Settings:
         knowledge_hub_timeout_s=float(os.getenv("KNOWLEDGE_HUB_TIMEOUT_S", "4")),
         knowledge_hub_strict_smoke=os.getenv("KNOWLEDGE_HUB_STRICT_SMOKE", "false").strip().lower()
         in {"1", "true", "yes", "on"},
-        dantedash_kb_backend=os.getenv("DANTEDASH_KB_BACKEND", "chroma").strip().lower() or "chroma",
-        dantedash_chroma_fallback_enabled=os.getenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", "true").strip().lower()
+        dantedash_kb_backend=os.getenv("DANTEDASH_KB_BACKEND", "knowledge_hub").strip().lower() or "knowledge_hub",
+        dantedash_chroma_fallback_enabled=os.getenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", "false").strip().lower()
         in {"1", "true", "yes", "on"},
     )
 
@@ -178,6 +178,7 @@ def get_kb() -> KnowledgeBase:
     )
 
 
+@lru_cache(maxsize=1)
 def get_knowledge_hub_client() -> KnowledgeHubClient:
     s = get_settings()
     return KnowledgeHubClient(
@@ -188,11 +189,12 @@ def get_knowledge_hub_client() -> KnowledgeHubClient:
     )
 
 
+@lru_cache(maxsize=1)
 def get_kb_gateway() -> KbGateway:
     s = get_settings()
     return KbGateway(
         mode=s.dantedash_kb_backend,
-        chroma=ChromaKbBackend(get_kb()),
+        chroma=lambda: ChromaKbBackend(get_kb()),
         knowledge_hub=KnowledgeHubKbBackend(get_knowledge_hub_client()),
         chroma_fallback_enabled=s.dantedash_chroma_fallback_enabled,
     )

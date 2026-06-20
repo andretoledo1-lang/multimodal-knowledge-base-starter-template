@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections import Counter
@@ -70,6 +71,8 @@ def main() -> int:
     openapi_paths = _openapi_paths(kh_base_url)
     qdrant = _qdrant_probe(args.qdrant_base_url, topology)
     query_results = _run_query_suite(kb, client, top_k=max(1, min(args.top_k, 12)))
+    image_query_results = _run_image_query_suite(kb, client, top_k=max(1, min(args.top_k, 12)))
+    all_query_results = [*query_results, *image_query_results]
     scoring_payload = _build_scoring_payload(
         audit=audit,
         topology=topology,
@@ -77,7 +80,7 @@ def main() -> int:
         kbs=kbs,
         qdrant=qdrant,
         visual_manifest_summary=visual_manifest_summary,
-        query_results=query_results,
+        query_results=all_query_results,
         openapi_paths=openapi_paths,
         settings_summary={
             "dantedash_kb_backend": settings.dantedash_kb_backend,
@@ -104,7 +107,9 @@ def main() -> int:
             "visual_manifests": visual_manifest_summary,
             "openapi_paths": openapi_paths,
         },
-        "query_results": query_results,
+        "query_results": all_query_results,
+        "text_query_results": query_results,
+        "image_query_results": image_query_results,
         "scoring_payload": scoring_payload,
         "score": score_result.to_payload(),
     }
@@ -245,7 +250,7 @@ def _run_query_suite(kb: Any, client: KnowledgeHubClient, *, top_k: int) -> list
     for case in QUERY_SUITE:
         query = case["query"]
         try:
-            chroma_results = kb.search_text(query, top_k=top_k)
+            chroma_results = _retry_baseline(lambda: kb.search_text(query, top_k=top_k))
             chroma_payload = [search_result_to_dto(item).model_dump() for item in chroma_results]
         except Exception as exc:  # noqa: BLE001
             chroma_payload = []
@@ -299,6 +304,125 @@ def _run_query_suite(kb: Any, client: KnowledgeHubClient, *, top_k: int) -> list
     return rows
 
 
+def _run_image_query_suite(kb: Any, client: KnowledgeHubClient, *, top_k: int) -> list[dict[str, Any]]:
+    samples = _sample_image_queries(kb, limit=1)
+    if not samples:
+        return [
+            {
+                "name": "image_query_sample",
+                "query": "sample_image_file",
+                "query_type": "image",
+                "critical": True,
+                "threshold": 0.8,
+                "chroma_returned": 0,
+                "knowledge_hub_ok": False,
+                "knowledge_hub_route": "dantedash_packages_search_image",
+                "knowledge_hub_returned": 0,
+                "asset_recall": 0.0,
+                "asset_precision": 0.0,
+                "score": 0.0,
+                "passed": False,
+                "chroma_error": "no_sample_image",
+                "chroma_baseline_status": "empty",
+                "missing_from_knowledge_hub_count": 0,
+            }
+        ]
+
+    rows: list[dict[str, Any]] = []
+    for index, sample in enumerate(samples, start=1):
+        image_path = sample["image_path"]
+        try:
+            chroma_results = _retry_baseline(lambda: kb.search_image(image_path, top_k=top_k))
+            chroma_payload = [search_result_to_dto(item).model_dump() for item in chroma_results]
+        except Exception as exc:  # noqa: BLE001
+            chroma_payload = []
+            chroma_error = type(exc).__name__
+        else:
+            chroma_error = None
+
+        if hasattr(client, "dantedash_search_packages_by_image"):
+            response = client.dantedash_search_packages_by_image(image_path, top_k=top_k)
+        else:
+            response = {"ok": False, "error": "knowledge_hub_image_query_not_available"}
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        kh_items = data.get("items") if isinstance(data, dict) and isinstance(data.get("items"), list) else []
+        if chroma_error or not chroma_payload:
+            parity = {
+                "asset_recall": 0.0,
+                "asset_precision": 0.0,
+                "passed": False,
+                "missing_from_knowledge_hub": [],
+            }
+            baseline_status = "failed" if chroma_error else "empty"
+        else:
+            parity = evaluate_result_parity(chroma_payload, kh_items, min_asset_overlap=0.8)
+            baseline_status = "ok"
+        rows.append(
+            {
+                "name": f"image_query_sample_{index}",
+                "query": sample.get("file_id") or Path(image_path).name,
+                "query_type": "image",
+                "critical": True,
+                "threshold": 0.8,
+                "chroma_returned": len(chroma_payload),
+                "knowledge_hub_ok": response.get("ok") is True,
+                "knowledge_hub_route": "dantedash_packages_search_image",
+                "knowledge_hub_returned": len(kh_items),
+                "asset_recall": parity["asset_recall"],
+                "asset_precision": parity["asset_precision"],
+                "score": parity["asset_recall"],
+                "passed": parity["passed"],
+                "chroma_error": chroma_error,
+                "chroma_baseline_status": baseline_status,
+                "missing_from_knowledge_hub_count": len(parity["missing_from_knowledge_hub"]),
+            }
+        )
+    return rows
+
+
+def _retry_baseline(operation, *, attempts: int = 3, delay_s: float = 0.75):
+    last_error: Exception | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return operation()
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(delay_s)
+    if last_error is not None:
+        raise last_error
+    return operation()
+
+
+def _sample_image_queries(kb: Any, *, limit: int) -> list[dict[str, str]]:
+    collection = getattr(kb, "collection", None)
+    if collection is None:
+        return []
+    try:
+        data = collection.get(where={"modality": "image"}, include=["metadatas"], limit=50)
+    except Exception:  # noqa: BLE001
+        return []
+    samples: list[dict[str, str]] = []
+    for meta in data.get("metadatas") or []:
+        if not isinstance(meta, dict):
+            continue
+        raw_path = meta.get("file_path") or meta.get("preview_file_path")
+        if not isinstance(raw_path, str) or not raw_path:
+            continue
+        path = Path(raw_path)
+        if not path.is_file():
+            continue
+        samples.append(
+            {
+                "image_path": str(path),
+                "file_id": _first_text(meta, "id", "file_id", "node_id", "dante_image_id", "source_sha256"),
+            }
+        )
+        if len(samples) >= limit:
+            break
+    return samples
+
+
 def _build_scoring_payload(
     *,
     audit: Any,
@@ -324,10 +448,21 @@ def _build_scoring_payload(
     operation_paths = {str(item.get("path") or "") for item in api_operations if isinstance(item, dict)}
     has_granular_visual_import = "/dantedash/packages/import" in operation_paths
     has_dantedash_search = "/dantedash/packages/search" in operation_paths
+    has_dantedash_image_search = "/dantedash/packages/search-image" in operation_paths
     has_dantedash_stats = "/dantedash/packages/stats" in operation_paths
     has_dantedash_items = "/dantedash/packages/items" in operation_paths
     has_dantedash_item = "/dantedash/packages/items/{item_id}" in operation_paths
     dantedash_manifest_available = "dantedash" in set(visual_manifest_summary.get("kb_slugs") or [])
+    image_query_rows = [
+        item for item in query_results if isinstance(item, dict) and item.get("query_type") == "image"
+    ]
+    image_query_ok = has_dantedash_image_search and bool(image_query_rows) and all(
+        bool(item.get("passed")) for item in image_query_rows
+    )
+    image_query_reason = _image_query_compatibility_reason(
+        route_available=has_dantedash_image_search,
+        image_query_rows=image_query_rows,
+    )
     topology_data = topology.get("data") if isinstance(topology.get("data"), dict) else {}
     infra = topology_data.get("infra") if isinstance(topology_data, dict) else {}
     visual_runtime = infra.get("visual_runtime") if isinstance(infra, dict) else {}
@@ -338,6 +473,7 @@ def _build_scoring_payload(
         name
         for name, passed in [
             ("text_search", has_dantedash_search),
+            ("image_search", has_dantedash_image_search),
             ("stats", has_dantedash_stats),
             ("list_items", has_dantedash_items),
             ("get_item", has_dantedash_item),
@@ -350,12 +486,12 @@ def _build_scoring_payload(
         name
         for name, passed in [
             ("text_search", has_dantedash_search),
+            ("image_search", has_dantedash_image_search),
             ("stats", has_dantedash_stats),
             ("list_items", has_dantedash_items),
             ("get_item", has_dantedash_item),
             ("preview", has_dantedash_item and dantedash_manifest_available),
             ("source_card_persistence", has_dantedash_search and dantedash_manifest_available),
-            ("image_search", False),
         ]
         if not passed
     ]
@@ -421,9 +557,9 @@ def _build_scoring_payload(
                 },
                 {
                     "name": "kh_image_search_compatible",
-                    "passed": False,
+                    "passed": image_query_ok,
                     "critical": False,
-                    "reason": "Image-query search remains Chroma/fallback in this cutover pass.",
+                    "reason": image_query_reason,
                 },
             ]
         },
@@ -458,6 +594,32 @@ def _build_scoring_payload(
             "contains_commercial_film_production_kb": _kbs_contains(kbs, "commercial-film-production-kb"),
         },
     }
+
+
+def _image_query_compatibility_reason(
+    *,
+    route_available: bool,
+    image_query_rows: list[dict[str, Any]],
+) -> str:
+    if not route_available:
+        return "Knowledge Hub image-query route is unavailable."
+    if not image_query_rows:
+        return "Image-query certification did not run; no sample image was available."
+    failed = [row for row in image_query_rows if not row.get("passed")]
+    if not failed:
+        return ""
+    parts: list[str] = []
+    for row in failed:
+        parts.append(
+            (
+                f"{row.get('name', 'image_query')}: score={row.get('score')} "
+                f"threshold={row.get('threshold')} kh_ok={row.get('knowledge_hub_ok')} "
+                f"kh_returned={row.get('knowledge_hub_returned')} "
+                f"chroma_status={row.get('chroma_baseline_status')} "
+                f"missing={row.get('missing_from_knowledge_hub_count')}"
+            )
+        )
+    return "; ".join(parts)
 
 
 def _scan_public_no_leak(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -547,8 +709,14 @@ def _render_markdown_report(private_payload: Mapping[str, Any], score: Mapping[s
     qdrant = runtime["qdrant"]
     manifest = runtime["visual_manifests"]
     decision = score["decision"]
+    settings_summary = scoring.get("dual_fallback_independence", {}).get("settings", {})
+    fallback_enabled = bool(settings_summary.get("chroma_fallback_enabled"))
     recommendation = (
-        "GO-ready, waiting for Andre GO. Chroma has not been disabled."
+        (
+            "GO-ready for KH-native reads with Chroma fallback disabled."
+            if not fallback_enabled
+            else "GO-ready, but Chroma fallback is still enabled for rollback."
+        )
         if score["passed"]
         else "NO-GO. Continue repairs before any Chroma disablement."
     )
@@ -566,6 +734,7 @@ def _render_markdown_report(private_payload: Mapping[str, Any], score: Mapping[s
         f"- DanteDash rows: `{audit['total_rows']}`",
         f"- DanteDash modalities: `{json.dumps(audit['by_modality'], sort_keys=True)}`",
         f"- Chroma to KH relationships: `{json.dumps(audit['by_kh_relationship'], sort_keys=True)}`",
+        f"- Runtime fallback enabled: `{fallback_enabled}`",
         f"- KH active visual collection: `{qdrant.get('active_collection')}`",
         f"- KH active visual points: `{qdrant.get('active_points')}`",
         f"- KH visual manifest assets: `{manifest.get('asset_count')}` across `{manifest.get('manifest_count')}` manifests",
@@ -611,8 +780,11 @@ def _render_markdown_report(private_payload: Mapping[str, Any], score: Mapping[s
             "",
         ]
     )
-    for action in score["next_actions"]:
-        lines.append(f"- {action}")
+    if score["next_actions"]:
+        for action in score["next_actions"]:
+            lines.append(f"- {action}")
+    else:
+        lines.append("- none")
     lines.append("")
     return "\n".join(lines)
 

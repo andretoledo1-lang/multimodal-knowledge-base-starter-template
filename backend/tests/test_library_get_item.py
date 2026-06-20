@@ -139,12 +139,12 @@ def test_kb_status_route_returns_public_backend_status() -> None:
                     "stats": "knowledge_hub",
                     "library": "knowledge_hub",
                     "preview": "knowledge_hub",
-                    "image_query_search": "chroma_fallback",
+                    "image_query_search": "knowledge_hub",
                 },
             }
 
     response = kb_status(kb=FakeKB())
 
     assert response.mode == "knowledge_hub"
-    assert response.surfaces["image_query_search"] == "chroma_fallback"
+    assert response.surfaces["image_query_search"] == "knowledge_hub"
     assert response.writes_enabled is False

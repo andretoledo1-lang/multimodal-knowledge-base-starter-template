@@ -8,14 +8,10 @@ dante_truthy() {
 }
 
 dante_default_chroma_fallback_for_backend() {
-  if [[ "${1:-}" == "knowledge_hub" ]]; then
-    printf 'true'
-  else
-    printf 'false'
-  fi
+  printf 'false'
 }
 
 dante_export_kb_runtime_defaults() {
   export DANTEDASH_KB_BACKEND="${DANTEDASH_KB_BACKEND:-knowledge_hub}"
-  export DANTEDASH_CHROMA_FALLBACK_ENABLED="${DANTEDASH_CHROMA_FALLBACK_ENABLED:-true}"
+  export DANTEDASH_CHROMA_FALLBACK_ENABLED="${DANTEDASH_CHROMA_FALLBACK_ENABLED:-false}"
 }

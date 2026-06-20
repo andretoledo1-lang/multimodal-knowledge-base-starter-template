@@ -94,7 +94,7 @@ def score_cutover_certification(payload: Mapping[str, Any], *, gate: float = CUT
     blockers = _blockers(payload, dimension_scores, hard_cap_reasons)
     passed = final_score >= gate and not blockers
     weakest = min(dimensions, key=lambda item: item.score)
-    next_actions = _next_actions(weakest.key, blockers)
+    next_actions = [] if passed else _next_actions(weakest.key, blockers)
     decision = "go_ready_waiting_for_go" if passed else "no_go_continue_repairs"
 
     return CutoverScoreResult(

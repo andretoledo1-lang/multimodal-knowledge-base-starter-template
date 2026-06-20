@@ -41,11 +41,42 @@ class _HitKb:
         ]
 
 
+class _ImageCollection:
+    def __init__(self, image_path: Path) -> None:
+        self.image_path = image_path
+
+    def get(self, **_kwargs):
+        return {
+            "metadatas": [
+                {
+                    "id": "file-a",
+                    "source_sha256": "sha-a",
+                    "modality": "image",
+                    "file_path": str(self.image_path),
+                }
+            ]
+        }
+
+
+class _ImageHitKb(_HitKb):
+    def __init__(self, image_path: Path) -> None:
+        self.collection = _ImageCollection(image_path)
+
+    def search_image(self, _image_path: str, *, top_k: int):
+        return self.search_text("image", top_k=top_k)
+
+
 class _Client:
     def __init__(self, items):
         self.items = items
 
     def retrieve(self, _payload):
+        return {"ok": True, "data": {"items": self.items}}
+
+
+class _ImageClient(_Client):
+    def dantedash_search_packages_by_image(self, _image_path: str, *, top_k: int):
+        del top_k
         return {"ok": True, "data": {"items": self.items}}
 
 
@@ -67,6 +98,62 @@ def test_query_suite_can_pass_when_assets_overlap() -> None:
     rows = module._run_query_suite(_HitKb(), _Client([{"metadata": {"source_sha256": "sha-a"}}]), top_k=1)
 
     assert all(row["score"] == 1.0 and row["passed"] is True for row in rows)
+
+
+def test_image_query_suite_can_pass_when_assets_overlap(tmp_path: Path) -> None:
+    module = _load_module()
+    image_path = tmp_path / "query.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    rows = module._run_image_query_suite(
+        _ImageHitKb(image_path),
+        _ImageClient([{"metadata": {"source_sha256": "sha-a"}}]),
+        top_k=1,
+    )
+
+    assert rows == [
+        {
+            "name": "image_query_sample_1",
+            "query": "file-a",
+            "query_type": "image",
+            "critical": True,
+            "threshold": 0.8,
+            "chroma_returned": 1,
+            "knowledge_hub_ok": True,
+            "knowledge_hub_route": "dantedash_packages_search_image",
+            "knowledge_hub_returned": 1,
+            "asset_recall": 1.0,
+            "asset_precision": 1.0,
+            "score": 1.0,
+            "passed": True,
+            "chroma_error": None,
+            "chroma_baseline_status": "ok",
+            "missing_from_knowledge_hub_count": 0,
+        }
+    ]
+
+
+def test_image_query_suite_failure_marks_compatibility_reason(tmp_path: Path) -> None:
+    module = _load_module()
+    image_path = tmp_path / "query.jpg"
+    image_path.write_bytes(b"fake-image")
+
+    rows = module._run_image_query_suite(
+        _ImageHitKb(image_path),
+        _ImageClient([{"metadata": {"source_sha256": "other-sha"}}]),
+        top_k=1,
+    )
+    assert rows[0]["passed"] is False
+    assert rows[0]["missing_from_knowledge_hub_count"] == 1
+
+    reason = module._image_query_compatibility_reason(
+        route_available=True,
+        image_query_rows=rows,
+    )
+
+    assert "image_query_sample_1" in reason
+    assert "score=0.0" in reason
+    assert "missing=1" in reason
 
 
 def test_public_no_leak_scan_detects_sensitive_strings() -> None:
