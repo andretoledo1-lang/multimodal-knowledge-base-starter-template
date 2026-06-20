@@ -4,8 +4,16 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { MessageSquare, FolderOpen, Network, Search } from "lucide-react";
+import {
+  FolderOpen,
+  MessageSquare,
+  Network,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Search,
+} from "lucide-react";
 import { Sidebar } from "@/components/Sidebar";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SearchPanel, type SearchPanelHandle } from "@/components/SearchPanel";
 import { ChatPanel } from "@/components/ChatPanel";
@@ -16,6 +24,7 @@ import { useChatWorkspace } from "@/hooks/useChatWorkspace";
 type TabKey = "search" | "chat" | "library" | "graph";
 
 const SIDEBAR_WIDTH_KEY = "dante-dashboard-sidebar-width";
+const SIDEBAR_COLLAPSED_KEY = "dante-dashboard-sidebar-collapsed";
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -27,10 +36,30 @@ function readStoredNumber(key: string, fallback: number, min: number, max: numbe
   return Number.isFinite(stored) ? clamp(stored, min, max) : fallback;
 }
 
+function readStoredBoolean(key: string, fallback: boolean) {
+  if (typeof window === "undefined") return fallback;
+  const stored = window.localStorage.getItem(key);
+  if (stored === "true") return true;
+  if (stored === "false") return false;
+  return fallback;
+}
+
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  return Boolean(
+    target.closest(
+      'input, textarea, select, button, [contenteditable="true"], [role="textbox"], [role="combobox"]',
+    ),
+  );
+}
+
 export default function App() {
   const [tab, setTab] = useState<TabKey>("search");
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     readStoredNumber(SIDEBAR_WIDTH_KEY, 320, 260, 480),
+  );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    readStoredBoolean(SIDEBAR_COLLAPSED_KEY, false),
   );
   const searchRef = useRef<SearchPanelHandle>(null);
   const chatWorkspace = useChatWorkspace();
@@ -40,12 +69,27 @@ export default function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
         setTab("search");
         // focus after the tab is mounted
         setTimeout(() => searchRef.current?.focus(), 0);
+      }
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey &&
+        !e.repeat &&
+        e.key.toLowerCase() === "b" &&
+        !isEditableTarget(e.target)
+      ) {
+        e.preventDefault();
+        setSidebarCollapsed((current) => !current);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -77,11 +121,14 @@ export default function App() {
 
   return (
     <div className="app-shell flex h-screen flex-col overflow-hidden bg-background md:flex-row">
-      <Sidebar
-        width={sidebarWidth}
-        onResizeStart={startSidebarResize}
-        workspace={chatWorkspace}
-      />
+      {!sidebarCollapsed && (
+        <Sidebar
+          width={sidebarWidth}
+          onResizeStart={startSidebarResize}
+          onCollapse={() => setSidebarCollapsed(true)}
+          workspace={chatWorkspace}
+        />
+      )}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <Tabs
           value={tab}
@@ -90,20 +137,45 @@ export default function App() {
           className="flex h-full min-w-0 flex-col gap-0"
         >
           <div className="app-topbar app-window-drag comfortable-scrollbar flex items-center justify-between gap-3 overflow-x-auto border-b px-4 py-3 md:px-6">
-            <TabsList>
-              <TabsTrigger value="search">
-                <Search className="h-4 w-4" /> Search
-              </TabsTrigger>
-              <TabsTrigger value="chat">
-                <MessageSquare className="h-4 w-4" /> Chat
-              </TabsTrigger>
-              <TabsTrigger value="library">
-                <FolderOpen className="h-4 w-4" /> Library
-              </TabsTrigger>
-              <TabsTrigger value="graph">
-                <Network className="h-4 w-4" /> Graph
-              </TabsTrigger>
-            </TabsList>
+            <div className="flex min-w-0 items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="app-shell-icon-button h-9 w-9 shrink-0"
+                onClick={() => setSidebarCollapsed((current) => !current)}
+                aria-label={
+                  sidebarCollapsed
+                    ? "Show navigation sidebar"
+                    : "Hide navigation sidebar"
+                }
+                title={
+                  sidebarCollapsed
+                    ? "Show navigation sidebar"
+                    : "Hide navigation sidebar"
+                }
+              >
+                {sidebarCollapsed ? (
+                  <PanelLeftOpen className="h-4 w-4" />
+                ) : (
+                  <PanelLeftClose className="h-4 w-4" />
+                )}
+              </Button>
+              <TabsList className="min-w-max">
+                <TabsTrigger value="search">
+                  <Search className="h-4 w-4" /> Search
+                </TabsTrigger>
+                <TabsTrigger value="chat">
+                  <MessageSquare className="h-4 w-4" /> Chat
+                </TabsTrigger>
+                <TabsTrigger value="library">
+                  <FolderOpen className="h-4 w-4" /> Library
+                </TabsTrigger>
+                <TabsTrigger value="graph">
+                  <Network className="h-4 w-4" /> Graph
+                </TabsTrigger>
+              </TabsList>
+            </div>
             <div className="hidden text-xs text-muted-foreground sm:block">
               <kbd className="rounded border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
                 ⌘K

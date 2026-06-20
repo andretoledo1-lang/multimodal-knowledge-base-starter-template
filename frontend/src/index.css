@@ -171,6 +171,18 @@
     backdrop-filter: blur(18px);
   }
 
+  .app-shell-icon-button {
+    border: 1px solid color-mix(in srgb, var(--app-line) 82%, transparent);
+    background: color-mix(in srgb, var(--color-background) 24%, transparent);
+    color: color-mix(in srgb, var(--color-muted-foreground) 88%, white 12%);
+  }
+
+  .app-shell-icon-button:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 38%, var(--app-line));
+    background: color-mix(in srgb, var(--color-primary) 13%, transparent) !important;
+    color: var(--color-foreground) !important;
+  }
+
   .app-window-drag {
     -webkit-app-region: drag;
   }
@@ -348,6 +360,19 @@
     height: 58px;
     -webkit-app-region: drag;
     background: linear-gradient(180deg, #050d03 0%, #081603 100%);
+  }
+
+  .app-sidebar-collapse-button {
+    -webkit-app-region: no-drag;
+    border: 1px solid color-mix(in srgb, var(--app-line) 82%, transparent);
+    background: color-mix(in srgb, var(--color-background) 22%, transparent);
+    color: color-mix(in srgb, var(--color-muted-foreground) 86%, white 14%);
+  }
+
+  .app-sidebar-collapse-button:hover {
+    border-color: color-mix(in srgb, var(--color-primary) 38%, var(--app-line));
+    background: color-mix(in srgb, var(--color-primary) 13%, transparent) !important;
+    color: var(--color-foreground) !important;
   }
 
   .app-resize-handle {

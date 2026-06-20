@@ -13,6 +13,7 @@ import {
   Folder,
   Loader2,
   MessageSquare,
+  PanelLeftClose,
   Pencil,
   Pin,
   PinOff,
@@ -47,10 +48,11 @@ const MODALITIES: Modality[] = ["image", "pdf", "video", "text"];
 interface SidebarProps {
   width: number;
   onResizeStart: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onCollapse: () => void;
   workspace: ChatWorkspace;
 }
 
-export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
+export function Sidebar({ width, onResizeStart, onCollapse, workspace }: SidebarProps) {
   const { data: stats, isLoading } = useStats();
   const clear = useClear();
   const ingest = useIngest();
@@ -179,7 +181,19 @@ export function Sidebar({ width, onResizeStart, workspace }: SidebarProps) {
       style={sidebarStyle}
       className="app-sidebar relative flex max-h-[44vh] w-full shrink-0 flex-col overflow-hidden border-b bg-card md:h-screen md:max-h-none md:w-[var(--sidebar-width)] md:border-b-0 md:border-r"
     >
-      <div className="app-sidebar-brand shrink-0 border-b border-border/60" />
+      <div className="app-sidebar-brand flex shrink-0 items-center justify-end border-b border-border/60 px-3">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="app-sidebar-collapse-button h-8 w-8"
+          onClick={onCollapse}
+          aria-label="Hide navigation sidebar"
+          title="Hide navigation sidebar"
+        >
+          <PanelLeftClose className="h-4 w-4" />
+        </Button>
+      </div>
 
       <div className="sidebar-workspace-header shrink-0 border-b px-4 py-3">
         <div className="flex items-start justify-between gap-3">
