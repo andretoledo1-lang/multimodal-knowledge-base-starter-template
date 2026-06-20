@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import os
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -9,6 +10,8 @@ from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from ..graph_explorer import GraphExplorer, GraphExplorerError, build_from_env
+from ..graph_gateway import GraphGateway, GraphGatewayError, KnowledgeHubGraphBackend
+from ..knowledge_hub_client import KnowledgeHubClient
 
 router = APIRouter(prefix="/graph", tags=["graph"])
 
@@ -83,6 +86,7 @@ class GraphNodeDetailDTO(GraphNodeCardDTO):
     created_at: str | None = None
     truncate: str | None = None
     adjacent_edges: list[GraphEdgeCardDTO]
+    backend: dict[str, Any] | None = None
 
 
 class GraphVisualNodeDTO(BaseModel):
@@ -120,6 +124,8 @@ class GraphHealthResponse(BaseModel):
     ok: bool
     dataset_id: str
     source: GraphSourceDTO
+    native: bool | None = None
+    manifest: dict[str, Any] | None = None
     loaded: bool
     cache: GraphCacheDTO
     node_count: int | None = None
@@ -127,6 +133,7 @@ class GraphHealthResponse(BaseModel):
     loaded_at: str | None = None
     read_only: bool
     error: str | None = None
+    backend: dict[str, Any] | None = None
 
 
 class GraphSummaryResponse(BaseModel):
@@ -140,11 +147,13 @@ class GraphSummaryResponse(BaseModel):
     source_family_counts: list[GraphCountItemDTO]
     top_nodes: list[GraphNodeCardDTO]
     graph: GraphPayloadDTO
+    backend: dict[str, Any] | None = None
 
 
 class GraphSearchResponse(BaseModel):
     query: str
     results: list[GraphNodeCardDTO]
+    backend: dict[str, Any] | None = None
 
 
 class GraphSubgraphResponse(BaseModel):
@@ -152,6 +161,7 @@ class GraphSubgraphResponse(BaseModel):
     center: GraphNodeCardDTO | None = None
     depth: int
     graph: GraphPayloadDTO
+    backend: dict[str, Any] | None = None
 
 
 @lru_cache(maxsize=1)
@@ -159,9 +169,27 @@ def get_graph_explorer() -> GraphExplorer:
     return build_from_env()
 
 
+@lru_cache(maxsize=1)
+def get_graph_gateway() -> GraphGateway:
+    return GraphGateway(
+        mode=os.getenv("DANTEDASH_GRAPH_BACKEND", "graphml").strip().lower() or "graphml",
+        graphml=get_graph_explorer,
+        knowledge_hub=KnowledgeHubGraphBackend(
+            KnowledgeHubClient(
+                base_url=os.getenv("KNOWLEDGE_HUB_BASE_URL", "http://127.0.0.1:8080").rstrip("/"),
+                actions_base_url=os.getenv("KNOWLEDGE_HUB_ACTIONS_BASE_URL", "http://127.0.0.1:8098").rstrip("/"),
+                actions_bearer_token=os.getenv("KNOWLEDGE_HUB_ACTIONS_BEARER_TOKEN", "").strip() or None,
+                timeout_s=float(os.getenv("KNOWLEDGE_HUB_TIMEOUT_S", "4")),
+            )
+        ),
+        graphml_fallback_enabled=os.getenv("DANTEDASH_GRAPH_KH_FALLBACK_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes", "on"},
+    )
+
+
 @router.get("/health", response_model=GraphHealthResponse)
 async def health(load: bool = False) -> dict[str, Any]:
-    return await run_in_threadpool(get_graph_explorer().health, load=load)
+    return await run_in_threadpool(get_graph_gateway().health, load=load)
 
 
 @router.get("/summary", response_model=GraphSummaryResponse)
@@ -172,12 +200,12 @@ async def summary(
 ) -> dict[str, Any]:
     try:
         return await run_in_threadpool(
-            get_graph_explorer().summary,
+            get_graph_gateway().summary,
             top_nodes_limit=top_nodes_limit,
             max_nodes=max_nodes,
             max_edges=max_edges,
         )
-    except GraphExplorerError as exc:
+    except (GraphExplorerError, GraphGatewayError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc
 
 
@@ -190,13 +218,13 @@ async def search(
 ) -> dict[str, Any]:
     try:
         return await run_in_threadpool(
-            get_graph_explorer().search,
+            get_graph_gateway().search,
             q,
             limit=limit,
             entity_type=entity_type,
             route=route,
         )
-    except GraphExplorerError as exc:
+    except (GraphExplorerError, GraphGatewayError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc
 
 
@@ -211,7 +239,7 @@ async def subgraph(
 ) -> dict[str, Any]:
     try:
         return await run_in_threadpool(
-            get_graph_explorer().subgraph,
+            get_graph_gateway().subgraph,
             node_id=node_id,
             depth=depth,
             max_nodes=max_nodes,
@@ -219,7 +247,7 @@ async def subgraph(
             entity_type=entity_type,
             route=route,
         )
-    except GraphExplorerError as exc:
+    except (GraphExplorerError, GraphGatewayError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc
 
 
@@ -230,9 +258,9 @@ async def node_detail(
 ) -> dict[str, Any]:
     try:
         return await run_in_threadpool(
-            get_graph_explorer().node_detail,
+            get_graph_gateway().node_detail,
             node_id,
             edge_limit=edge_limit,
         )
-    except GraphExplorerError as exc:
+    except (GraphExplorerError, GraphGatewayError) as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc

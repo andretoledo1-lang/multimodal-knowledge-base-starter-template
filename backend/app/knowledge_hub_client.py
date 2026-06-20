@@ -4,6 +4,7 @@ from __future__ import annotations
 import mimetypes
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -156,6 +157,69 @@ class KnowledgeHubClient:
             f"/dantedash/packages/items/{item_id}",
             params={"include_private": include_private},
             sanitize=not include_private,
+        )
+
+    def dantedash_graph_health(self, *, load: bool = False) -> dict[str, Any]:
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/graph/health", params={"load": load})
+
+    def dantedash_graph_summary(
+        self,
+        *,
+        top_nodes_limit: int = 40,
+        max_nodes: int = 700,
+        max_edges: int = 1400,
+    ) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            "/dantedash/graph/summary",
+            params={
+                "top_nodes_limit": top_nodes_limit,
+                "max_nodes": max_nodes,
+                "max_edges": max_edges,
+            },
+        )
+
+    def dantedash_graph_search(
+        self,
+        *,
+        q: str,
+        limit: int = 20,
+        entity_type: str | None = None,
+        route: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"q": q, "limit": limit}
+        if entity_type:
+            params["entity_type"] = entity_type
+        if route:
+            params["route"] = route
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/graph/search", params=params)
+
+    def dantedash_graph_subgraph(
+        self,
+        *,
+        node_id: str | None = None,
+        depth: int = 1,
+        max_nodes: int = 220,
+        max_edges: int = 900,
+        entity_type: str | None = None,
+        route: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"depth": depth, "max_nodes": max_nodes, "max_edges": max_edges}
+        if node_id:
+            params["node_id"] = node_id
+        if entity_type:
+            params["entity_type"] = entity_type
+        if route:
+            params["route"] = route
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/graph/subgraph", params=params)
+
+    def dantedash_graph_node(self, node_id: str, *, edge_limit: int = 80) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            f"/dantedash/graph/node/{quote(node_id, safe='')}",
+            params={"edge_limit": edge_limit},
         )
 
     def actions_health(self) -> dict[str, Any]:

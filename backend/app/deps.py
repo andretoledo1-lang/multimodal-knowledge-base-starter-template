@@ -59,6 +59,8 @@ class Settings:
     knowledge_hub_strict_smoke: bool
     dantedash_kb_backend: str
     dantedash_chroma_fallback_enabled: bool
+    dantedash_graph_backend: str
+    dantedash_graph_kh_fallback_enabled: bool
 
 
 @lru_cache(maxsize=1)
@@ -127,6 +129,9 @@ def get_settings() -> Settings:
         in {"1", "true", "yes", "on"},
         dantedash_kb_backend=os.getenv("DANTEDASH_KB_BACKEND", "knowledge_hub").strip().lower() or "knowledge_hub",
         dantedash_chroma_fallback_enabled=os.getenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes", "on"},
+        dantedash_graph_backend=os.getenv("DANTEDASH_GRAPH_BACKEND", "graphml").strip().lower() or "graphml",
+        dantedash_graph_kh_fallback_enabled=os.getenv("DANTEDASH_GRAPH_KH_FALLBACK_ENABLED", "false").strip().lower()
         in {"1", "true", "yes", "on"},
     )
 

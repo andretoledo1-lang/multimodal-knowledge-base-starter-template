@@ -69,6 +69,15 @@ export interface GraphCache {
   metadata_hash: string | null;
 }
 
+export interface GraphBackendStatus {
+  mode: string;
+  primary: string;
+  shadow?: Record<string, unknown> | null;
+  fallback_enabled?: boolean;
+  fallback_from?: string | null;
+  fallback_error?: string | null;
+}
+
 export interface GraphCountItem {
   id: string;
   label: string;
@@ -122,6 +131,7 @@ export interface GraphNodeDetail extends GraphNodeCard {
   created_at: string | null;
   truncate: string | null;
   adjacent_edges: GraphEdgeCard[];
+  backend?: GraphBackendStatus | null;
 }
 
 export interface GraphVisualNode {
@@ -159,6 +169,8 @@ export interface GraphHealthResponse {
   ok: boolean;
   dataset_id: string;
   source: GraphSource;
+  native?: boolean | null;
+  manifest?: Record<string, unknown> | null;
   loaded: boolean;
   cache: GraphCache;
   node_count: number | null;
@@ -166,6 +178,7 @@ export interface GraphHealthResponse {
   loaded_at: string | null;
   read_only: boolean;
   error: string | null;
+  backend?: GraphBackendStatus | null;
 }
 
 export interface GraphSummaryResponse {
@@ -179,11 +192,13 @@ export interface GraphSummaryResponse {
   source_family_counts: GraphCountItem[];
   top_nodes: GraphNodeCard[];
   graph: GraphPayload;
+  backend?: GraphBackendStatus | null;
 }
 
 export interface GraphSearchResponse {
   query: string;
   results: GraphNodeCard[];
+  backend?: GraphBackendStatus | null;
 }
 
 export interface GraphSubgraphResponse {
@@ -191,6 +206,7 @@ export interface GraphSubgraphResponse {
   center: GraphNodeCard | null;
   depth: number;
   graph: GraphPayload;
+  backend?: GraphBackendStatus | null;
 }
 
 export interface Project {

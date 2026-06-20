@@ -28,6 +28,10 @@ MAX_DATA_FIELDS = int(os.getenv("DANTE_LIGHTRAG_GRAPHML_MAX_DATA_FIELDS", "96"))
 MAX_FIELD_CHARS = int(os.getenv("DANTE_LIGHTRAG_GRAPHML_MAX_FIELD_CHARS", "12000"))
 MAX_LIST_ITEMS = int(os.getenv("DANTE_LIGHTRAG_GRAPHML_MAX_LIST_ITEMS", "220"))
 CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+LOCAL_PATH_RE = re.compile(
+    r"(?:~|/(?:Users|private/var|var/folders|tmp|Volumes)/)[^\s`'\"),;]+",
+    re.IGNORECASE,
+)
 
 
 class GraphExplorerError(RuntimeError):
@@ -515,7 +519,7 @@ class GraphExplorer:
             "source_families": node.source_families,
             "degree": node.degree,
             "weighted_degree": round(node.weighted_degree, 4),
-            "description": _truncate(" ".join(node.descriptions), 360),
+            "description": _public_truncate(" ".join(node.descriptions), 360),
         }
 
     def _edge_graph_dto(self, edge: GraphEdge) -> dict[str, Any]:
@@ -527,7 +531,7 @@ class GraphExplorer:
             "routes": edge.routes,
             "route_labels": edge.route_labels,
             "keywords": edge.keywords[:10],
-            "description": _truncate(" ".join(edge.descriptions), 240),
+            "description": _public_truncate(" ".join(edge.descriptions), 240),
         }
 
     def _node_card(
@@ -548,7 +552,7 @@ class GraphExplorer:
             "source_families": node.source_families,
             "degree": node.degree,
             "weighted_degree": round(node.weighted_degree, 4),
-            "description": _truncate(" ".join(descriptions), 1100 if include_full else 420),
+            "description": _public_truncate(" ".join(descriptions), 1100 if include_full else 420),
             "source_files": node.source_files[:60 if include_full else 8],
             "source_ids": node.source_ids[:80 if include_full else 8],
             "obsidian_hints": [
@@ -561,9 +565,9 @@ class GraphExplorer:
         if score is not None:
             payload["score"] = score
         if snippet_query:
-            payload["snippet"] = _snippet(node.search_text, snippet_query)
+            payload["snippet"] = _public_snippet(node.search_text, snippet_query)
         if include_full:
-            payload["descriptions"] = node.descriptions
+            payload["descriptions"] = [_public_text(description, 1200) for description in node.descriptions]
             payload["created_at"] = node.created_at
             payload["truncate"] = node.truncate
         return payload
@@ -586,7 +590,7 @@ class GraphExplorer:
             "routes": edge.routes,
             "route_labels": edge.route_labels,
             "source_files": edge.source_files[:10],
-            "description": _truncate(
+            "description": _public_truncate(
                 " ".join(edge.descriptions),
                 540 if include_description else 180,
             ),
@@ -821,6 +825,18 @@ def _safe_text(value: str | None, max_chars: int = MAX_FIELD_CHARS) -> str:
     return text[:max_chars].rstrip()
 
 
+def _redact_local_paths(value: str) -> str:
+    return LOCAL_PATH_RE.sub("[local path]", value)
+
+
+def _public_text(value: str | None, max_chars: int = MAX_FIELD_CHARS) -> str:
+    return _redact_local_paths(_safe_text(value, max_chars))
+
+
+def _public_truncate(value: str, max_chars: int) -> str:
+    return _truncate(_redact_local_paths(value), max_chars)
+
+
 def _safe_source_hint(value: str) -> str:
     text = _safe_text(value, 1200)
     if not text:
@@ -955,6 +971,10 @@ def _snippet(text: str, query_lc: str, *, size: int = 260) -> str:
     start = max(0, idx - size // 3)
     end = min(len(text), start + size)
     return _truncate(text[start:end], size)
+
+
+def _public_snippet(text: str, query_lc: str, *, size: int = 260) -> str:
+    return _redact_local_paths(_snippet(text, query_lc, size=size))
 
 
 def _truncate(value: str, max_chars: int) -> str:

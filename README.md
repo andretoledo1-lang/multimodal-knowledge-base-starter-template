@@ -23,6 +23,7 @@ In scope:
 - Read-only Knowledge Hub cockpit under `/api/knowledge-hub/*`.
 - KH-native KB read operation for text search, chat source cards, stats,
   library, and previews through `DANTEDASH_KB_BACKEND=knowledge_hub`.
+- KH-native LightRAG graph cockpit reads through `DANTEDASH_GRAPH_BACKEND`.
 - MCP wrapper named `dante-multimodal-rag`.
 - CLI launch aliases such as `dantedash`, `dantevision`, and `dante menu`.
 
@@ -66,14 +67,14 @@ folder and is not copied into `uploads/`.
 ## Local Data Stores
 
 The dashboard now uses Knowledge Hub as the primary read backend for text
-search, chat retrieval source cards, stats, item lookup, and previews. Chroma is
-still kept on disk and available as fallback for image-query search until that
-path is decided separately.
+search, chat retrieval source cards, stats, item lookup, previews, and
+image-query search. Chroma is still kept on disk as rollback data until the
+sunset window is closed.
 
 The dashboard uses two local app stores:
 
 - `chroma_db/` stores the preserved Chroma KB content, embeddings, retrieval
-  nodes, and image-query fallback path.
+  nodes, and rollback path.
 - `backend/app_state/chat.sqlite` stores product chat state: projects, threads,
   messages, thread summaries, curated project memory, selected model/top_k, and
   per-answer source snapshots.
@@ -94,6 +95,23 @@ surfaces.
 This does not move or embed the canonical Knowledge Hub runtime. The cockpit
 does not expose ingest, sync, jobs, evals, staging, start/stop, reindex, or vault
 mutation controls.
+
+## Graph Backend
+
+The Graph tab can serve the Black Label LightRAG graph from local GraphML,
+dual-read against Knowledge Hub, or KH-native primary mode:
+
+```bash
+DANTEDASH_GRAPH_BACKEND=graphml        # rollback and baseline
+DANTEDASH_GRAPH_BACKEND=dual           # GraphML primary, KH shadow diagnostics
+DANTEDASH_GRAPH_BACKEND=knowledge_hub  # KH-native primary
+```
+
+The KH-native manifest lives under
+`/Users/vidigal/.knowledge-hub/manifests/native-graph/dantedash-lightrag.json`.
+Run `scripts/dantedash_kh_graph_parity_certify.py` before switching the
+dashboard to KH-native primary. The first activation report lives at
+`docs/reports/kh-native-lightrag-graph-parity.md`.
 
 ## Model Contract
 

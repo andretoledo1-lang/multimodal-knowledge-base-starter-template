@@ -112,10 +112,19 @@ down. Use strict KH smoke only on machines expected to have both services live:
 DANTE_KH_STRICT_SMOKE=1 /Users/vidigal/codex/dantedash/scripts/smoke-dante-dashboard.sh
 ```
 
-The GraphML source is backend configuration only. The default local source is
-the Black Label LightRAG `graph_chunk_entity_relation.graphml`, and it can be
-overridden with `DANTE_LIGHTRAG_GRAPHML_PATH`. The API returns redacted source
-metadata and must not expose absolute local paths in normal HTTP payloads.
+The Graph source is backend configuration only. During the KH-native graph
+cutover, DanteDash supports:
+
+- `DANTEDASH_GRAPH_BACKEND=graphml`: local GraphML explorer primary.
+- `DANTEDASH_GRAPH_BACKEND=dual`: local GraphML primary with KH-native shadow
+  diagnostics.
+- `DANTEDASH_GRAPH_BACKEND=knowledge_hub`: KH-native graph primary.
+
+`DANTEDASH_GRAPH_KH_FALLBACK_ENABLED=true` allows GraphML fallback only when
+`knowledge_hub` mode is active. The local GraphML rollback/export source can
+still be overridden with `DANTE_LIGHTRAG_GRAPHML_PATH`. The API returns redacted
+source metadata and must not expose absolute local paths in normal HTTP
+payloads.
 
 ## Local App State
 
@@ -142,9 +151,11 @@ The smoke script now expects `/api/kb/status` to report
 `DANTE_EXPECTED_KB_BACKEND=chroma` only when intentionally validating
 Chroma-primary rollback.
 
-The same smoke script checks `/api/graph/health`. Missing external GraphML is a
-warning by default so unrelated dashboard health still passes. Use strict graph
-smoke only on machines expected to have the Black Label graph:
+The same smoke script checks `/api/graph/health`, reports the graph backend
+mode, and can enforce one with `DANTE_EXPECTED_GRAPH_BACKEND=graphml|dual|knowledge_hub`.
+Missing graph source is a warning by default so unrelated dashboard health still
+passes. Use strict graph smoke only on machines expected to have the Black Label
+graph:
 
 ```bash
 DANTE_GRAPH_STRICT_SMOKE=1 /Users/vidigal/codex/dantedash/scripts/smoke-dante-dashboard.sh
@@ -161,9 +172,28 @@ configuration.
 
 ## Graph View
 
-The Graph tab is a read-only relationship map over the external LightRAG
-GraphML. Search, route/entity filters, top nodes, source hints, and the
-inspector use `/api/graph/*` endpoints and work without a canvas.
+The Graph tab is a read-only relationship map over the Black Label LightRAG
+graph. Search, route/entity filters, top nodes, source hints, and the inspector
+use `/api/graph/*` endpoints and work without a canvas. GraphML remains the
+rollback/export artifact, but the preferred cutover path is KH-native graph
+serving after parity certification.
+
+The KH-native graph manifest is imported from the existing GraphML into:
+
+```text
+/Users/vidigal/.knowledge-hub/manifests/native-graph/dantedash-lightrag.json
+```
+
+Run parity before making KH-native primary:
+
+```bash
+DANTE_LIGHTRAG_GRAPHML_PATH=/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/neural_memory_voyage_2048/graph_chunk_entity_relation.graphml \
+  scripts/dantedash_kh_graph_parity_certify.py --knowledge-hub-base-url http://127.0.0.1:8080
+```
+
+The 2026-06-20 activation imported `23962` nodes and `50666` edges, then
+certified temporary branch API parity at `0.965` against a `0.89` threshold.
+The report is written to `docs/reports/kh-native-lightrag-graph-parity.md`.
 
 The visual renderer is opt-in:
 
@@ -179,7 +209,8 @@ visual pause state intact. The keyboard shortcut is `F` when focus is not inside
 a text field.
 
 Do not use Graph View operations for ingest, reindex, clear, delete, or vault
-mutation. The graph source should remain an external read-only file.
+mutation. Graph retrieval remains shadow-only for chat until a separate quality
+gate promotes it.
 
 ## Knowledge Hub Cockpit
 

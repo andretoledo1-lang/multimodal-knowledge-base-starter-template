@@ -28,6 +28,7 @@ else
   DEFAULT_EXPECTED_IMAGE_QUERY_BACKEND="chroma"
 fi
 EXPECTED_IMAGE_QUERY_BACKEND="${DANTE_EXPECTED_IMAGE_QUERY_BACKEND:-${DEFAULT_EXPECTED_IMAGE_QUERY_BACKEND}}"
+EXPECTED_GRAPH_BACKEND="${DANTE_EXPECTED_GRAPH_BACKEND:-}"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -127,6 +128,17 @@ graph_source="$(
   python3 -c 'import json,sys; print(json.load(sys.stdin).get("source", {}).get("source_name", ""))' \
     <<<"${graph_health_json}"
 )"
+graph_backend_primary="$(
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend", {}).get("primary", ""))' \
+    <<<"${graph_health_json}"
+)"
+graph_backend_mode="$(
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("backend", {}).get("mode", ""))' \
+    <<<"${graph_health_json}"
+)"
+if [[ -n "${EXPECTED_GRAPH_BACKEND}" && "${graph_backend_primary}" != "${EXPECTED_GRAPH_BACKEND}" && "${graph_backend_mode}" != "${EXPECTED_GRAPH_BACKEND}" ]]; then
+  fail "expected graph backend ${EXPECTED_GRAPH_BACKEND}, got mode=${graph_backend_mode:-unknown} primary=${graph_backend_primary:-unknown}"
+fi
 if [[ "${graph_exists}" == "true" ]]; then
   if [[ "${DANTE_GRAPH_STRICT_SMOKE}" == "1" ]]; then
     graph_search_json="$(curl -fsS --max-time 30 "${BACKEND_URL}/api/graph/search?q=treatment&limit=3")" \
@@ -139,7 +151,7 @@ if [[ "${graph_exists}" == "true" ]]; then
   fi
 else
   if [[ "${DANTE_GRAPH_STRICT_SMOKE}" == "1" ]]; then
-    fail "strict graph smoke expected a readable GraphML source"
+    fail "strict graph smoke expected a readable graph source"
   fi
   warn "graph source is unavailable; default smoke keeps graph optional"
 fi
@@ -299,7 +311,7 @@ if [[ -n "${image_query_check:-}" ]]; then
 else
   note "kb_backend=${kb_backend} chroma_fallback=${kb_fallback} image_query=${image_query_backend}"
 fi
-note "graph=${graph_source:-unavailable} source_exists=${graph_exists} strict=${DANTE_GRAPH_STRICT_SMOKE}"
+note "graph=${graph_source:-unavailable} source_exists=${graph_exists} backend_mode=${graph_backend_mode:-unknown} backend_primary=${graph_backend_primary:-unknown} strict=${DANTE_GRAPH_STRICT_SMOKE}"
 note "knowledge_hub api=${kh_api_ok} actions=${kh_actions_ok} strict=${kh_strict_expected}"
 note "${decoupage_check}"
 note "frontend=${FRONTEND_URL}"
