@@ -137,6 +137,40 @@ def test_dantedash_image_search_missing_file_returns_public_error(tmp_path: Path
     }
 
 
+def test_dantedash_graph_client_calls_read_only_graph_endpoints() -> None:
+    seen_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(str(request.url))
+        if request.url.path == "/dantedash/graph/health":
+            assert request.url.params["load"] == "true"
+            return httpx.Response(200, json={"ok": True, "dataset_id": "commercial-film-production-kb"})
+        if request.url.path == "/dantedash/graph/summary":
+            assert request.url.params["top_nodes_limit"] == "7"
+            return httpx.Response(200, json={"node_count": 2, "edge_count": 1})
+        if request.url.path == "/dantedash/graph/search":
+            assert request.url.params["q"] == "visual card"
+            assert request.url.params["route"] == "visual-reference-assets"
+            return httpx.Response(200, json={"query": "visual card", "results": []})
+        if request.url.path == "/dantedash/graph/subgraph":
+            assert request.url.params["node_id"] == "Visual/Card"
+            return httpx.Response(200, json={"dataset_id": "commercial-film-production-kb", "graph": {}})
+        if request.url.path == "/dantedash/graph/node/Visual/Card":
+            assert "Visual%2FCard" in str(request.url)
+            assert request.url.params["edge_limit"] == "3"
+            return httpx.Response(200, json={"id": "Visual/Card"})
+        raise AssertionError(request.url.path)
+
+    client = make_client(handler)
+
+    assert client.dantedash_graph_health(load=True)["ok"] is True
+    assert client.dantedash_graph_summary(top_nodes_limit=7, max_nodes=20, max_edges=40)["ok"] is True
+    assert client.dantedash_graph_search(q="visual card", limit=2, route="visual-reference-assets")["ok"] is True
+    assert client.dantedash_graph_subgraph(node_id="Visual/Card", depth=1, max_nodes=10, max_edges=20)["ok"] is True
+    assert client.dantedash_graph_node("Visual/Card", edge_limit=3)["ok"] is True
+    assert all("/dantedash/graph/" in path for path in seen_paths)
+
+
 def test_sanitize_public_payload_removes_sensitive_keys_and_paths() -> None:
     payload = {
         "safe": "value",

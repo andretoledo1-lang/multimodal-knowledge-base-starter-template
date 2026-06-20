@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.graph_explorer import GraphExplorer
-from app.routes.graph import get_graph_explorer, router
+from app.routes.graph import get_graph_explorer, get_graph_gateway, router
 
 
 def write_graphml(path: Path) -> None:
@@ -45,7 +45,7 @@ def write_graphml(path: Path) -> None:
     <node id="Treatment PPM Pitch">
       <data key="n0">Treatment PPM Pitch</data>
       <data key="n1">concept</data>
-      <data key="n2">Pitch and PPM routing capsule</data>
+      <data key="n2">Pitch and PPM routing capsule at /Users/vidigal/Dante/private-note.md</data>
       <data key="n3">chunk-pitch</data>
       <data key="n4">/private/tmp/secret.md&lt;SEP&gt;../unsafe.md&lt;SEP&gt;bl-route--source-routing__04-treatment-ppm-pitch-source-routing.md</data>
     </node>
@@ -58,7 +58,7 @@ def write_graphml(path: Path) -> None:
     </edge>
     <edge source="Commercial-Film-Production-Kb" target="Treatment PPM Pitch">
       <data key="e0">1.25</data>
-      <data key="e1">Core pack routes into pitch production</data>
+      <data key="e1">Core pack routes into pitch production from /private/var/tmp/raw-source.md</data>
       <data key="e2">pitch,ppm</data>
       <data key="e3">chunk-route</data>
       <data key="e4">bl-route--source-routing__04-treatment-ppm-pitch-source-routing.md</data>
@@ -73,6 +73,7 @@ def write_graphml(path: Path) -> None:
 def graph_client(graphml: Path) -> TestClient:
     os.environ["DANTE_LIGHTRAG_GRAPHML_PATH"] = str(graphml)
     get_graph_explorer.cache_clear()
+    get_graph_gateway.cache_clear()
     app = FastAPI()
     app.include_router(router, prefix="/api")
     return TestClient(app)
@@ -105,6 +106,9 @@ def test_graph_explorer_parses_sep_routes_and_sanitized_sources(tmp_path: Path) 
     sanitized = explorer.node_detail("Treatment PPM Pitch")
     assert "/private" not in " ".join(sanitized["source_files"])
     assert ".." not in " ".join(sanitized["source_files"])
+    assert "/Users/" not in sanitized["description"]
+    assert "/private/var/" not in sanitized["adjacent_edges"][0]["description"]
+    assert "[local path]" in sanitized["description"]
     assert graphml.stat().st_mtime_ns == before
 
 
@@ -144,6 +148,13 @@ def test_graph_routes_are_bounded_redacted_and_support_slash_ids(tmp_path: Path)
         assert results[0]["id"] == "visual/cards/aftersun-2022-001"
         assert len(results) <= 2
 
+        pitch = client.get("/api/graph/search", params={"q": "Treatment PPM Pitch", "limit": 1})
+        assert pitch.status_code == 200
+        pitch_text = str(pitch.json())
+        assert "/Users/" not in pitch_text
+        assert "/private/var/" not in pitch_text
+        assert "[local path]" in pitch_text
+
         subgraph = client.get(
             "/api/graph/subgraph",
             params={"node_id": "Commercial-Film-Production-Kb", "depth": 1, "max_nodes": 10},
@@ -159,6 +170,7 @@ def test_graph_routes_are_bounded_redacted_and_support_slash_ids(tmp_path: Path)
         assert detail.json()["id"] == slash_id
 
     get_graph_explorer.cache_clear()
+    get_graph_gateway.cache_clear()
 
 
 def test_missing_graph_source_health_is_non_crashing_and_load_routes_fail(tmp_path: Path) -> None:
@@ -174,6 +186,7 @@ def test_missing_graph_source_health_is_non_crashing_and_load_routes_fail(tmp_pa
         assert summary.json()["detail"] == "graph_source_missing"
 
     get_graph_explorer.cache_clear()
+    get_graph_gateway.cache_clear()
 
 
 def test_graph_rejects_unsafe_xml_declarations(tmp_path: Path) -> None:
@@ -197,3 +210,52 @@ def test_graph_rejects_unsafe_xml_declarations(tmp_path: Path) -> None:
         assert search.json()["detail"] == "graph_xml_unsafe_declaration"
 
     get_graph_explorer.cache_clear()
+    get_graph_gateway.cache_clear()
+
+
+def test_graph_routes_accept_knowledge_hub_gateway_payload(monkeypatch) -> None:
+    class FakeGateway:
+        def health(self, *, load: bool = False):
+            return {
+                "ok": True,
+                "dataset_id": "commercial-film-production-kb",
+                "source": {
+                    "source_name": "graph_chunk_entity_relation.graphml",
+                    "exists": True,
+                    "size_bytes": 123,
+                    "mtime_ns": 456,
+                    "mtime_iso": "2026-06-20T00:00:00+00:00",
+                    "metadata_hash": "hash",
+                },
+                "native": True,
+                "manifest": {"exists": True, "source_name": "dantedash-lightrag.json"},
+                "loaded": True,
+                "cache": {"loaded": True, "fresh": True, "stale": False, "loaded_at": None, "metadata_hash": "hash"},
+                "node_count": 1,
+                "edge_count": 0,
+                "loaded_at": None,
+                "read_only": True,
+                "error": None,
+                "backend": {"mode": "knowledge_hub", "primary": "knowledge_hub"},
+            }
+
+        def search(self, q: str, *, limit: int, entity_type: str | None = None, route: str | None = None):
+            return {
+                "query": q,
+                "results": [],
+                "backend": {"mode": "knowledge_hub", "primary": "knowledge_hub"},
+            }
+
+    monkeypatch.setattr("app.routes.graph.get_graph_gateway", lambda: FakeGateway())
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    with TestClient(app) as client:
+        health = client.get("/api/graph/health")
+        search = client.get("/api/graph/search", params={"q": "visual", "limit": 3})
+
+    assert health.status_code == 200
+    assert health.json()["native"] is True
+    assert health.json()["backend"]["primary"] == "knowledge_hub"
+    assert search.status_code == 200
+    assert search.json()["backend"]["mode"] == "knowledge_hub"

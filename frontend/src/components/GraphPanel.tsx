@@ -30,7 +30,7 @@ import {
   useGraphSubgraph,
   useGraphSummary,
 } from "@/hooks/useGraph";
-import type { GraphNodeCard, GraphNodeDetail, GraphPayload } from "@/lib/api";
+import type { GraphBackendStatus, GraphNodeCard, GraphNodeDetail, GraphPayload } from "@/lib/api";
 
 const LazyGraphCanvas = lazy(() =>
   import("@/components/GraphCanvas").then((module) => ({
@@ -83,6 +83,9 @@ export function GraphPanel() {
     ? (search.data?.results ?? [])
     : (summary.data?.top_nodes ?? []);
   const visualPayload = selectedNodeId && subgraph.data ? subgraph.data.graph : summary.data?.graph;
+  const backendText = graphBackendLabel(
+    summary.data?.backend ?? search.data?.backend ?? subgraph.data?.backend ?? health.data?.backend ?? null,
+  );
   const statusText = statusLabel({
     graphExists,
     healthLoading: health.isLoading,
@@ -133,7 +136,12 @@ export function GraphPanel() {
           )}
         >
           <Database className="h-3.5 w-3.5" />
-          {statusText}
+          <span>{statusText}</span>
+          {backendText && (
+            <span className="border-l border-current/25 pl-2 text-muted-foreground">
+              {backendText}
+            </span>
+          )}
         </div>
       </header>
 
@@ -589,4 +597,13 @@ function statusLabel(args: {
   if (args.summaryLoading) return "Loading graph";
   if (!args.cacheLoaded) return "Cold";
   return args.cacheFresh ? "Loaded" : "Stale";
+}
+
+function graphBackendLabel(status: GraphBackendStatus | null) {
+  if (!status) return "";
+  if (status.fallback_from) return `Fallback: ${status.primary}`;
+  if (status.mode === "dual") return "Dual";
+  if (status.primary === "knowledge_hub") return "KH native";
+  if (status.primary === "graphml") return "GraphML";
+  return status.primary;
 }
