@@ -13,5 +13,14 @@ dante_default_chroma_fallback_for_backend() {
 
 dante_export_kb_runtime_defaults() {
   export DANTEDASH_KB_BACKEND="${DANTEDASH_KB_BACKEND:-knowledge_hub}"
+  export DANTEDASH_GRAPH_BACKEND="${DANTEDASH_GRAPH_BACKEND:-knowledge_hub}"
   export DANTEDASH_CHROMA_FALLBACK_ENABLED="${DANTEDASH_CHROMA_FALLBACK_ENABLED:-false}"
+  if [[ -z "${DANTEDASH_STRICT_NO_CHROMA+x}" ]]; then
+    if [[ "${DANTEDASH_KB_BACKEND}" == "knowledge_hub" ]]; then
+      export DANTEDASH_STRICT_NO_CHROMA="true"
+    else
+      export DANTEDASH_STRICT_NO_CHROMA="false"
+    fi
+  fi
+  export DANTEDASH_CHROMA_VISUAL_RESCUE_ENABLED="${DANTEDASH_CHROMA_VISUAL_RESCUE_ENABLED:-false}"
 }

@@ -48,6 +48,7 @@ def test_cutover_score_perfect_fixture_passes_gate() -> None:
     result = score_cutover_certification(_passing_payload())
 
     assert result.score == 1.0
+    assert result.gate == 0.95
     assert result.passed is True
     assert result.decision == "go_ready_waiting_for_go"
     assert result.hard_cap is None

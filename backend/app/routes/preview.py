@@ -20,6 +20,7 @@ logger = logging.getLogger("kb.preview")
 DEFAULT_EXTRA_PREVIEW_ROOTS = [
     Path("/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/visual-reference-assets/source-assets"),
     Path("/Users/vidigal/Library/CloudStorage/Dropbox/andre/inbox"),
+    Path("/Users/vidigal/knowledge-base"),
 ]
 EXTRA_PREVIEW_ROOTS = [
     *DEFAULT_EXTRA_PREVIEW_ROOTS,

@@ -1,0 +1,75 @@
+Dirty worktree recovery status: DanteDash
+Captured: 2026-07-01
+
+Branch:
+- codex/non-anthropic-chat-eval
+
+HEAD:
+- 7ab89b7 feat(eval): craft-only LightRAG gate (calibrate query set to craft questions)
+
+Remotes:
+- andretoledo1-lang: multimodal-knowledge-base-starter-template
+- origin: multimodal-knowledge-base-starter-template
+
+Modified tracked files:
+- .gitignore
+- AGENTS.md
+- CLAUDE.md
+- README.md
+- backend/app/chat_prompts/policies/voice.md
+- backend/app/deps.py
+- backend/app/kb_backends.py
+- backend/app/kb_cutover_score.py
+- backend/app/kb_gateway.py
+- backend/app/kb_parity.py
+- backend/app/knowledge_hub_client.py
+- backend/app/lightrag_cinema_craft_ingest.py
+- backend/app/main.py
+- backend/app/routes/graph.py
+- backend/app/routes/knowledge_hub.py
+- backend/app/routes/library.py
+- backend/app/routes/preview.py
+- backend/app/schemas.py
+- backend/tests/test_chat_prompt_integration.py
+- backend/tests/test_graph_explorer.py
+- backend/tests/test_kb_cutover_score.py
+- backend/tests/test_kb_gateway.py
+- backend/tests/test_kh_import_missing.py
+- backend/tests/test_knowledge_hub_client.py
+- backend/tests/test_lightrag_cinema_craft_ingest.py
+- backend/tests/test_runtime_shell_env.py
+- docs/reports/knowledge-hub-cutover-certification.md
+- docs/runbooks/dante-dashboard-operations.md
+- electron/main.cjs
+- frontend/src/App.tsx
+- frontend/src/components/ChatPanel.tsx
+- frontend/src/components/GraphCanvas.tsx
+- frontend/src/components/GraphPanel.tsx
+- frontend/src/components/Sidebar.tsx
+- frontend/src/index.css
+- frontend/src/lib/api.ts
+- frontend/src/lib/utils.ts
+- index.json
+- scripts/dante_kb_runtime_env.sh
+- scripts/dantedash_kh_import_missing.py
+- scripts/dantedash_kh_parity_eval.py
+- scripts/smoke-dante-dashboard.sh
+- scripts/start-dante-multimodal-rag.sh
+- snapshots/LATEST.md
+- snapshots/index.md
+
+Untracked categories:
+- Protected local env backup: backend/.env.bak-20260630-045125-graph-kh
+- Candidate runtime code: backend/app/chat_runtime.py, backend/app/graph_gateway.py
+- Candidate tests: backend/tests/test_graph_gateway.py
+- Brainstorm docs: docs/brainstorms/
+- Plans: docs/plans/2026-06-17-001-feat-knowledge-hub-cockpit-plan.md, docs/plans/2026-06-17-002-feat-graph-focus-mode-plan.md, docs/plans/2026-06-20-002-feat-kh-native-lightrag-graph-sunset-plan.md, docs/plans/2026-06-20-003-feat-lightrag-cinema-craft-ingest-plan.md, docs/plans/2026-06-27-001-fix-lightrag-remainder-dashboard-graph-plan.md, docs/plans/2026-06-29-001-feat-finalize-lightrag-eval-graph-sunset-plan.md, docs/plans/2026-06-30-001-feat-kh-native-graph-official-cutover-plan.md, docs/plans/2026-06-30-002-feat-pirata-kb-multimodal-normalization-plan.md, docs/plans/2026-07-01-001-feat-kh-native-total-chroma-sunset-plan.md, docs/plans/2026-07-01-002-fix-dirty-worktree-commit-recovery-plan.md
+- Generated reports: docs/reports/2026-06-23-rag-architecture-best-of-all-worlds.html, docs/reports/2026-06-27-lightrag-craft-gate-certification.html, docs/reports/2026-06-29-lightrag-reprocess-dashboard-graphsunset-status.md, docs/reports/2026-06-30-lightrag-corruption-claim-investigation.md, docs/reports/2026-06-30-pirata-kb-multimodal-normalization-activation-report.md, docs/reports/enrich-remaining-probe/, docs/reports/lightrag-agentic-layer-explainer.html, docs/reports/lightrag-cinema-craft-*/, docs/reports/lightrag-finalization-20260629-codex/
+- Hub cockpit frontend candidates: frontend/src/components/KnowledgeHubPanel.tsx, frontend/src/hooks/useKnowledgeHub.ts
+- Local media and LightRAG scripts: scripts/dante_local_media_ingest.py, scripts/dante_materialize_media_previews.py, scripts/lightrag_cinema_craft_inventory.py, scripts/lightrag_cinema_craft_prepare.py
+- Deep memories: snapshots/DEEP_MEMORY_DANTEDASH_005.md through snapshots/DEEP_MEMORY_DANTEDASH_011.md
+
+Safety notes:
+- No cleanup, reset, checkout, or deletion was performed before this inventory.
+- Local env backups are protected and must not be committed.
+- Generated LightRAG reports are evidence artifacts, not part of the scoped KH-native sunset commit unless explicitly selected later.

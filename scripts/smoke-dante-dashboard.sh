@@ -23,6 +23,13 @@ source "${ROOT_DIR}/scripts/dante_kb_runtime_env.sh"
 DEFAULT_EXPECTED_CHROMA_FALLBACK="$(dante_default_chroma_fallback_for_backend "${EXPECTED_KB_BACKEND}")"
 EXPECTED_CHROMA_FALLBACK="${DANTE_EXPECTED_CHROMA_FALLBACK:-${DEFAULT_EXPECTED_CHROMA_FALLBACK}}"
 if [[ "${EXPECTED_KB_BACKEND}" == "knowledge_hub" ]]; then
+  DEFAULT_EXPECTED_STRICT_NO_CHROMA="true"
+else
+  DEFAULT_EXPECTED_STRICT_NO_CHROMA="false"
+fi
+EXPECTED_STRICT_NO_CHROMA="${DANTE_EXPECTED_STRICT_NO_CHROMA:-${DEFAULT_EXPECTED_STRICT_NO_CHROMA}}"
+EXPECTED_CHROMA_VISUAL_RESCUE="${DANTE_EXPECTED_CHROMA_VISUAL_RESCUE:-false}"
+if [[ "${EXPECTED_KB_BACKEND}" == "knowledge_hub" ]]; then
   DEFAULT_EXPECTED_IMAGE_QUERY_BACKEND="knowledge_hub"
 else
   DEFAULT_EXPECTED_IMAGE_QUERY_BACKEND="chroma"
@@ -47,11 +54,13 @@ warn() {
 [[ -d "${ROOT_DIR}/frontend" ]] || fail "frontend directory is missing"
 [[ -f "${ROOT_DIR}/backend/app/mcp_server.py" ]] || fail "MCP server module is missing"
 [[ -f "${ROOT_DIR}/electron/main.cjs" ]] || fail "Electron wrapper is missing"
-[[ -d "${ROOT_DIR}/chroma_db" ]] || fail "runtime chroma_db directory is missing"
 
-grep -q "^KB_COLLECTION=dante_multimodal_kb" "${ENV_FILE}" || fail "KB_COLLECTION is not dante_multimodal_kb"
-grep -q "^KB_PERSIST_DIR=${ROOT_DIR}/chroma_db" "${ENV_FILE}" || fail "KB_PERSIST_DIR does not point at this workspace"
-grep -q "^KB_UPLOAD_DIR=${ROOT_DIR}/uploads" "${ENV_FILE}" || fail "KB_UPLOAD_DIR does not point at this workspace"
+if [[ "${EXPECTED_KB_BACKEND}" != "knowledge_hub" ]] || ! dante_truthy "${EXPECTED_STRICT_NO_CHROMA}"; then
+  [[ -d "${ROOT_DIR}/chroma_db" ]] || fail "runtime chroma_db directory is missing"
+  grep -q "^KB_COLLECTION=dante_multimodal_kb" "${ENV_FILE}" || fail "KB_COLLECTION is not dante_multimodal_kb"
+  grep -q "^KB_PERSIST_DIR=${ROOT_DIR}/chroma_db" "${ENV_FILE}" || fail "KB_PERSIST_DIR does not point at this workspace"
+  grep -q "^KB_UPLOAD_DIR=${ROOT_DIR}/uploads" "${ENV_FILE}" || fail "KB_UPLOAD_DIR does not point at this workspace"
+fi
 
 stats_json="$(curl -fsS --max-time 5 "${BACKEND_URL}/api/stats")" || fail "backend stats endpoint is unavailable"
 total="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("total", ""))' <<<"${stats_json}")"
@@ -78,12 +87,32 @@ image_query_backend="$(
   python3 -c 'import json,sys; print(json.load(sys.stdin).get("surfaces", {}).get("image_query_search", ""))' \
     <<<"${kb_status_json}"
 )"
+strict_no_chroma="$(
+  python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("strict_no_chroma", False)).lower())' \
+    <<<"${kb_status_json}"
+)"
+chroma_visual_rescue="$(
+  python3 -c 'import json,sys; print(str(json.load(sys.stdin).get("chroma_visual_rescue_enabled", False)).lower())' \
+    <<<"${kb_status_json}"
+)"
+visual_text_rescue="$(
+  python3 -c 'import json,sys; print(json.load(sys.stdin).get("surfaces", {}).get("visual_text_rescue", ""))' \
+    <<<"${kb_status_json}"
+)"
 [[ "${kb_backend}" == "${EXPECTED_KB_BACKEND}" ]] \
   || fail "unexpected KB backend ${kb_backend}, expected ${EXPECTED_KB_BACKEND}"
 [[ "${kb_fallback}" == "${EXPECTED_CHROMA_FALLBACK}" ]] \
   || fail "unexpected Chroma fallback ${kb_fallback}, expected ${EXPECTED_CHROMA_FALLBACK}"
 [[ "${image_query_backend}" == "${EXPECTED_IMAGE_QUERY_BACKEND}" ]] \
   || fail "image-query search is ${image_query_backend}, expected ${EXPECTED_IMAGE_QUERY_BACKEND}"
+[[ "${strict_no_chroma}" == "${EXPECTED_STRICT_NO_CHROMA}" ]] \
+  || fail "strict no-Chroma is ${strict_no_chroma}, expected ${EXPECTED_STRICT_NO_CHROMA}"
+[[ "${chroma_visual_rescue}" == "${EXPECTED_CHROMA_VISUAL_RESCUE}" ]] \
+  || fail "Chroma visual rescue is ${chroma_visual_rescue}, expected ${EXPECTED_CHROMA_VISUAL_RESCUE}"
+if [[ "${EXPECTED_KB_BACKEND}" == "knowledge_hub" ]] && dante_truthy "${EXPECTED_STRICT_NO_CHROMA}"; then
+  [[ "${visual_text_rescue}" == "disabled" ]] \
+    || fail "visual text rescue surface is ${visual_text_rescue}, expected disabled"
+fi
 
 if [[ "${EXPECTED_IMAGE_QUERY_BACKEND}" == "knowledge_hub" ]]; then
   [[ -f "${IMAGE_QUERY_SMOKE_FILE}" ]] || fail "image-query smoke file missing: ${IMAGE_QUERY_SMOKE_FILE}"

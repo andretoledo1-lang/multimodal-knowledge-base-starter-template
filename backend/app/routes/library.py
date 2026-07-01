@@ -91,7 +91,8 @@ def delete_item(file_id: str, kb: KbGateway = Depends(get_kb_gateway)) -> Delete
 @router.get("/stats", response_model=StatsResponse)
 def stats(kb: KbGateway = Depends(get_kb_gateway)) -> StatsResponse:
     try:
-        return StatsResponse(total=kb.count(), by_modality=kb.count_by_modality())
+        raw = kb.stats()
+        return StatsResponse(total=int(raw.get("total") or 0), by_modality=dict(raw.get("by_modality") or {}))
     except KbBackendUnavailable as exc:
         raise HTTPException(status_code=503, detail="Knowledge base backend unavailable") from exc
 

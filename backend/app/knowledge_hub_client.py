@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -40,6 +42,11 @@ SENSITIVE_KEYS = {
     "token",
 }
 
+LOCAL_PATH_RE = re.compile(
+    r"(?:~|/(?:Applications|Users|home|opt|private|tmp|var|Volumes)/)[^\s`'\"),;]+",
+    re.IGNORECASE,
+)
+
 
 def sanitize_public_payload(value: Any) -> Any:
     """Remove local paths, credentials, DSNs, and runtime roots from public JSON."""
@@ -65,25 +72,17 @@ def sanitize_public_payload(value: Any) -> Any:
         return sanitized
     if isinstance(value, list):
         return [sanitize_public_payload(item) for item in value]
-    if isinstance(value, str) and _looks_like_local_path(value):
-        return "[redacted-local-path]"
+    if isinstance(value, str):
+        return _redact_local_paths(value)
     return value
 
 
 def _looks_like_local_path(value: str) -> bool:
-    stripped = value.strip()
-    if stripped.startswith("~/") or "/Users/" in stripped:
-        return True
-    return stripped.startswith((
-        "/Applications/",
-        "/home/",
-        "/opt/",
-        "/private/",
-        "/tmp/",
-        "/Users/",
-        "/var/",
-        "/Volumes/",
-    ))
+    return bool(LOCAL_PATH_RE.search(value.strip()))
+
+
+def _redact_local_paths(value: str) -> str:
+    return LOCAL_PATH_RE.sub("[redacted-local-path]", value)
 
 
 class KnowledgeHubClient:
@@ -141,7 +140,13 @@ class KnowledgeHubClient:
             return _unavailable("knowledge_hub", "image_query_file_unavailable")
 
     def dantedash_package_stats(self) -> dict[str, Any]:
-        return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/stats")
+        return self._request_json(
+            "knowledge_hub",
+            "GET",
+            self.base_url,
+            "/dantedash/packages/stats",
+            timeout_s=max(self.timeout_s, 15.0),
+        )
 
     def dantedash_package_items(self, *, limit: int | None = None, offset: int = 0) -> dict[str, Any]:
         params = {"offset": offset}
@@ -156,6 +161,159 @@ class KnowledgeHubClient:
             f"/dantedash/packages/items/{item_id}",
             params={"include_private": include_private},
             sanitize=not include_private,
+        )
+
+    def multimodal_package_stats(self, corpus_slug: str) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            f"/multimodal/packages/{quote(corpus_slug, safe='')}/stats",
+            timeout_s=max(self.timeout_s, 15.0),
+        )
+
+    def multimodal_package_items(
+        self,
+        corpus_slug: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        params = {"offset": offset}
+        if limit is not None:
+            params["limit"] = limit
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            f"/multimodal/packages/{quote(corpus_slug, safe='')}/items",
+            params=params,
+            timeout_s=max(self.timeout_s, 15.0),
+        )
+
+    def multimodal_package_item(
+        self,
+        corpus_slug: str,
+        item_id: str,
+        *,
+        include_private: bool = False,
+    ) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            f"/multimodal/packages/{quote(corpus_slug, safe='')}/items/{quote(item_id, safe='')}",
+            params={"include_private": include_private},
+            sanitize=not include_private,
+            timeout_s=max(self.timeout_s, 15.0),
+        )
+
+    def multimodal_search_packages(self, corpus_slug: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post_json(
+            "knowledge_hub",
+            self.base_url,
+            f"/multimodal/packages/{quote(corpus_slug, safe='')}/search",
+            payload,
+        )
+
+    def multimodal_search_packages_by_image(
+        self,
+        corpus_slug: str,
+        image_path: str | Path,
+        *,
+        top_k: int = 5,
+    ) -> dict[str, Any]:
+        path = Path(image_path)
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        try:
+            with path.open("rb") as handle:
+                return self._request_json(
+                    "knowledge_hub",
+                    "POST",
+                    self.base_url,
+                    f"/multimodal/packages/{quote(corpus_slug, safe='')}/search-image",
+                    data={"top_k": str(max(1, min(int(top_k), 50)))},
+                    files={"file": (path.name or "query.jpg", handle, content_type)},
+                    timeout_s=max(self.timeout_s, 15.0),
+                )
+        except (OSError, ValueError):
+            return _unavailable("knowledge_hub", "image_query_file_unavailable")
+
+    def dantedash_graph_health(self, *, load: bool = False) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            "/dantedash/graph/health",
+            params={"load": load},
+        )
+
+    def dantedash_graph_summary(
+        self,
+        *,
+        top_nodes_limit: int = 40,
+        max_nodes: int = 700,
+        max_edges: int = 1400,
+    ) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            "/dantedash/graph/summary",
+            params={
+                "top_nodes_limit": top_nodes_limit,
+                "max_nodes": max_nodes,
+                "max_edges": max_edges,
+            },
+            timeout_s=max(self.timeout_s, 15.0),
+        )
+
+    def dantedash_graph_search(
+        self,
+        *,
+        q: str,
+        limit: int = 20,
+        entity_type: str | None = None,
+        route: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"q": q, "limit": limit}
+        if entity_type:
+            params["entity_type"] = entity_type
+        if route:
+            params["route"] = route
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/graph/search", params=params)
+
+    def dantedash_graph_subgraph(
+        self,
+        *,
+        node_id: str | None = None,
+        depth: int = 1,
+        max_nodes: int = 220,
+        max_edges: int = 900,
+        entity_type: str | None = None,
+        route: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "depth": depth,
+            "max_nodes": max_nodes,
+            "max_edges": max_edges,
+        }
+        if node_id:
+            params["node_id"] = node_id
+        if entity_type:
+            params["entity_type"] = entity_type
+        if route:
+            params["route"] = route
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            "/dantedash/graph/subgraph",
+            params=params,
+            timeout_s=max(self.timeout_s, 15.0),
+        )
+
+    def dantedash_graph_node(self, node_id: str, *, edge_limit: int = 80) -> dict[str, Any]:
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            f"/dantedash/graph/node/{quote(node_id, safe='')}",
+            params={"edge_limit": edge_limit},
+            timeout_s=max(self.timeout_s, 15.0),
         )
 
     def actions_health(self) -> dict[str, Any]:
@@ -211,6 +369,7 @@ class KnowledgeHubClient:
         params: dict[str, Any] | None = None,
         actions: bool = False,
         sanitize: bool = True,
+        timeout_s: float | None = None,
     ) -> dict[str, Any]:
         return self._request_json(
             surface,
@@ -220,6 +379,7 @@ class KnowledgeHubClient:
             params=params,
             actions=actions,
             sanitize=sanitize,
+            timeout_s=timeout_s,
         )
 
     def _post_json(
@@ -253,6 +413,7 @@ class KnowledgeHubClient:
         if actions and self.actions_bearer_token:
             headers["Authorization"] = f"Bearer {self.actions_bearer_token}"
         try:
+            request_timeout = timeout_s if timeout_s is not None else self.timeout_s
             response = self._http.request(
                 method,
                 f"{base_url.rstrip('/')}/{path.lstrip('/')}",
@@ -261,7 +422,7 @@ class KnowledgeHubClient:
                 data=data,
                 files=files,
                 headers=headers,
-                timeout=timeout_s,
+                timeout=request_timeout,
             )
         except httpx.TimeoutException:
             return _unavailable(surface, "request_timeout")
@@ -269,7 +430,14 @@ class KnowledgeHubClient:
             return _unavailable(surface, "service_unavailable")
 
         if response.status_code < 200 or response.status_code >= 300:
-            return _unavailable(surface, "request_failed", status_code=response.status_code)
+            error = "request_failed"
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            if isinstance(payload, dict) and isinstance(payload.get("detail"), str):
+                error = str(sanitize_public_payload(payload["detail"]))
+            return _unavailable(surface, error, status_code=response.status_code)
         try:
             data = response.json()
         except ValueError:

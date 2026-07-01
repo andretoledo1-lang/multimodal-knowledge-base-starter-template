@@ -42,7 +42,10 @@ class KbParityAudit:
 def package_key_from_metadata(metadata: Mapping[str, Any] | None, node_id: str = "") -> str:
     meta = metadata or {}
     for field in (
+        "package_id",
+        "asset_identity",
         "source_sha256",
+        "content_hash",
         "dante_image_id",
         "preview_image_file_id",
         "linked_image_file_id",
