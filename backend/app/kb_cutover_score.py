@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Mapping, Sequence
 
 
-CUTOVER_GATE = 0.89
+CUTOVER_GATE = 0.95
 
 DIMENSION_WEIGHTS: dict[str, float] = {
     "inventory_coverage": 0.16,

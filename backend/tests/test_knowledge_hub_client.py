@@ -40,6 +40,26 @@ def test_healthy_kh_api_returns_sanitized_payloads() -> None:
     assert client.kbs()["data"] == {"items": [{"kb_slug": "film"}]}
 
 
+def test_default_timeout_is_preserved_when_request_has_no_override() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.extensions["timeout"]["read"] == 4.0
+        return httpx.Response(200, json={"status": "ok"})
+
+    assert make_client(handler).health()["ok"] is True
+
+
+def test_dantedash_stats_uses_longer_read_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/dantedash/packages/stats"
+        assert request.extensions["timeout"]["read"] == 15.0
+        return httpx.Response(200, json={"status": "ok", "total": 1, "by_modality": {"text": 1}})
+
+    result = make_client(handler).dantedash_package_stats()
+
+    assert result["ok"] is True
+    assert result["data"]["total"] == 1
+
+
 def test_down_service_returns_unavailable_without_raw_error() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused with local details")
@@ -137,6 +157,106 @@ def test_dantedash_image_search_missing_file_returns_public_error(tmp_path: Path
     }
 
 
+def test_multimodal_package_methods_call_generic_routes(tmp_path: Path) -> None:
+    query_image = tmp_path / "query.jpg"
+    query_image.write_bytes(b"fake-image")
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        if request.url.path == "/multimodal/packages/pirata-kb/stats":
+            assert request.extensions["timeout"]["read"] == 15.0
+            return httpx.Response(
+                200,
+                json={
+                    "status": "certified",
+                    "summary": {"asset_count": 1, "private_root": "/Users/vidigal/private"},
+                },
+            )
+        if request.url.path == "/multimodal/packages/pirata-kb/items":
+            assert request.url.params["limit"] == "2"
+            return httpx.Response(200, json={"status": "certified", "items": [{"package_id": "pkg-a"}]})
+        if request.url.path == "/multimodal/packages/pirata-kb/items/pkg-a":
+            return httpx.Response(200, json={"status": "certified", "item": {"package_id": "pkg-a"}})
+        if request.url.path == "/multimodal/packages/pirata-kb/search":
+            return httpx.Response(200, json={"status": "certified", "items": [{"package_id": "pkg-a"}]})
+        if request.url.path == "/multimodal/packages/pirata-kb/search-image":
+            assert "multipart/form-data" in request.headers["content-type"]
+            return httpx.Response(200, json={"status": "certified", "items": [{"package_id": "pkg-image-a"}]})
+        raise AssertionError(request.url.path)
+
+    client = make_client(handler)
+
+    assert client.multimodal_package_stats("pirata-kb")["data"] == {
+        "status": "certified",
+        "summary": {"asset_count": 1},
+    }
+    assert client.multimodal_package_items("pirata-kb", limit=2)["data"]["items"][0]["package_id"] == "pkg-a"
+    assert client.multimodal_package_item("pirata-kb", "pkg-a")["data"]["item"]["package_id"] == "pkg-a"
+    assert client.multimodal_search_packages("pirata-kb", {"query": "ship", "top_k": 1})["data"]["items"][0][
+        "package_id"
+    ] == "pkg-a"
+    assert client.multimodal_search_packages_by_image("pirata-kb", query_image, top_k=1)["data"]["items"][0][
+        "package_id"
+    ] == "pkg-image-a"
+    assert seen == [
+        "GET /multimodal/packages/pirata-kb/stats",
+        "GET /multimodal/packages/pirata-kb/items",
+        "GET /multimodal/packages/pirata-kb/items/pkg-a",
+        "POST /multimodal/packages/pirata-kb/search",
+        "POST /multimodal/packages/pirata-kb/search-image",
+    ]
+
+
+def test_dantedash_graph_client_methods_call_native_graph_routes() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(f"{request.method} {request.url.path}")
+        if request.url.path == "/dantedash/graph/summary":
+            assert request.extensions["timeout"]["read"] == 15.0
+        return httpx.Response(200, json={"ok": True, "query": request.url.params.get("q", "")})
+
+    client = make_client(handler)
+
+    assert client.dantedash_graph_health(load=True)["ok"] is True
+    assert client.dantedash_graph_summary(max_nodes=10)["ok"] is True
+    assert client.dantedash_graph_search(q="Barry Lyndon")["data"]["query"] == "Barry Lyndon"
+    assert client.dantedash_graph_subgraph(node_id="gn_test")["ok"] is True
+    assert client.dantedash_graph_node("gn_test")["ok"] is True
+    assert seen == [
+        "GET /dantedash/graph/health",
+        "GET /dantedash/graph/summary",
+        "GET /dantedash/graph/search",
+        "GET /dantedash/graph/subgraph",
+        "GET /dantedash/graph/node/gn_test",
+    ]
+
+
+def test_dantedash_graph_node_encodes_node_id_path_segments() -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.raw_path.decode("utf-8"))
+        return httpx.Response(200, json={"ok": True})
+
+    result = make_client(handler).dantedash_graph_node("../topology")
+
+    assert result["ok"] is True
+    assert seen == ["/dantedash/graph/node/..%2Ftopology?edge_limit=80"]
+
+
+def test_non_2xx_json_detail_is_sanitized_and_preserved() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "node_not_found at /Users/vidigal/private.graphml"})
+
+    result = make_client(handler).dantedash_graph_node("gn_missing")
+
+    assert result["ok"] is False
+    assert result["status_code"] == 404
+    assert result["error"] == "node_not_found at [redacted-local-path]"
+
+
 def test_sanitize_public_payload_removes_sensitive_keys_and_paths() -> None:
     payload = {
         "safe": "value",
@@ -145,7 +265,8 @@ def test_sanitize_public_payload_removes_sensitive_keys_and_paths() -> None:
         "nested": {
             "source_path": "/Users/vidigal/private.md",
             "relative_path": "notes/file.md",
-            "text": "open /Users/vidigal/private.md",
+            "text": "open /Users/vidigal/private.md and /private/var/tmp/a.md",
+            "volume_text": "compare /Volumes/Archive/a.md with /home/donna/b.md and /opt/kh/c.md",
         },
     }
 
@@ -154,6 +275,7 @@ def test_sanitize_public_payload_removes_sensitive_keys_and_paths() -> None:
         "api_path": "/health",
         "nested": {
             "relative_path": "notes/file.md",
-            "text": "[redacted-local-path]",
+            "text": "open [redacted-local-path] and [redacted-local-path]",
+            "volume_text": "compare [redacted-local-path] with [redacted-local-path] and [redacted-local-path]",
         },
     }

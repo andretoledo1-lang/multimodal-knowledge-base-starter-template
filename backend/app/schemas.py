@@ -188,6 +188,8 @@ class KbStatusResponse(BaseModel):
     shadow_backend: str | None = None
     chroma_fallback_enabled: bool
     chroma_available_as_fallback: bool
+    chroma_visual_rescue_enabled: bool = False
+    strict_no_chroma: bool = False
     writes_enabled: bool
     surfaces: dict[str, str]
 

@@ -24,7 +24,7 @@ trap cleanup INT TERM EXIT
 
 echo "Dante multimodal backend:  ${API_PROXY_TARGET}"
 echo "Dante multimodal frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"
-echo "Dante KB backend:          ${DANTEDASH_KB_BACKEND} (chroma fallback: ${DANTEDASH_CHROMA_FALLBACK_ENABLED})"
+echo "Dante KB backend:          ${DANTEDASH_KB_BACKEND} (chroma fallback: ${DANTEDASH_CHROMA_FALLBACK_ENABLED}, strict no-Chroma: ${DANTEDASH_STRICT_NO_CHROMA}, visual rescue: ${DANTEDASH_CHROMA_VISUAL_RESCUE_ENABLED})"
 
 (cd "${ROOT_DIR}/backend" && "${UV_BIN}" run uvicorn app.main:app --host "${BACKEND_HOST}" --port "${BACKEND_PORT}") &
 (cd "${ROOT_DIR}" && VITE_API_PROXY_TARGET="${API_PROXY_TARGET}" "${PNPM_BIN}" --filter frontend dev --host "${FRONTEND_HOST}" --port "${FRONTEND_PORT}") &

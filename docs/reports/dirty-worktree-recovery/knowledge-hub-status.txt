@@ -1,0 +1,42 @@
+Dirty worktree recovery status: Knowledge Hub
+Captured: 2026-07-01
+
+Branch:
+- main
+
+HEAD:
+- 33f5677 fix(visual-memory): preserve foreign manifests in sweep
+
+Remote:
+- origin: knowledge-hub
+
+Modified tracked files:
+- .gitignore
+- config/hub_profiles.yaml
+- src/knowledge_hub/config.py
+- src/knowledge_hub/hub_profile.py
+- src/knowledge_hub/hub_service.py
+- src/knowledge_hub/local_models.py
+- src/knowledge_hub/main.py
+- src/knowledge_hub/mcp_server.py
+- src/knowledge_hub/runtime.py
+- src/knowledge_hub/visual_embeddings.py
+- tests/test_api_v1.py
+- tests/test_config.py
+- tests/test_hub_profile.py
+- tests/test_hub_service.py
+- tests/test_mcp_server.py
+- tests/test_visual_memory.py
+
+Untracked categories:
+- Local backups and runtime snapshots: .codex-backups/, .env.bak-*, config/hub_profiles.yaml.bak-*, docker-compose.yml.bak-*, scripts/run_knowledge_hub_api.sh.bak-*
+- Browser smoke artifacts: .playwright-mcp/, ce-browser-*.md, ce-browser-*.png
+- Memory and prompt docs: docs/memories/DEEP_MEMORY_RAGv183-Codex-pre-visual-sunset.md, docs/prompts/
+- Historical reports and vendor docs: docs/reports/**, docs/vendor/
+- Candidate new modules: src/knowledge_hub/external_research.py, src/knowledge_hub/graph_native.py, src/knowledge_hub/multimodal_packages.py
+- Candidate new tests: tests/test_external_research.py, tests/test_graph_native.py, tests/test_multimodal_packages.py
+
+Safety notes:
+- No cleanup, reset, checkout, or deletion was performed before this inventory.
+- Env backups and browser artifacts are protected/deferred and must not be committed into a scoped package-search PR.
+- The Knowledge Hub commit candidate must be extracted into a separate branch from the DanteDash commit candidate.

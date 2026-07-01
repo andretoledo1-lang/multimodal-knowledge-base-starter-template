@@ -1,8 +1,8 @@
 # Knowledge Hub Cutover Certification
 
-- Run id: `kh-native-image-query-final5-20260620T062441Z`
-- Generated at: `2026-06-20T06:24:55.503630+00:00`
-- Final score: `0.9947` / gate `0.89`
+- Run id: `kh-cutover-certification-20260701-codex`
+- Generated at: `2026-07-01T16:25:50.634174+00:00`
+- Final score: `0.9947` / gate `0.95`
 - Decision: `go_ready_waiting_for_go`
 - Recommendation: GO-ready for KH-native reads with Chroma fallback disabled.
 
@@ -13,8 +13,8 @@
 - Chroma to KH relationships: `{"matched": 8099}`
 - Runtime fallback enabled: `False`
 - KH active visual collection: `visual_memory__voyage_multimodal_3_5_1024`
-- KH active visual points: `9849`
-- KH visual manifest assets: `9853` across `13` manifests
+- KH active visual points: `9852`
+- KH visual manifest assets: `9854` across `14` manifests
 
 ## Score Dimensions
 

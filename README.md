@@ -19,10 +19,11 @@ In scope:
 - Dashboard UI and Electron app.
 - Backend API on `127.0.0.1:8035`.
 - Frontend on `127.0.0.1:5173`.
-- Local app Chroma collection `dante_multimodal_kb`.
 - Read-only Knowledge Hub cockpit under `/api/knowledge-hub/*`.
 - KH-native KB read operation for text search, chat source cards, stats,
-  library, and previews through `DANTEDASH_KB_BACKEND=knowledge_hub`.
+  library, previews, and image-query search through
+  `DANTEDASH_KB_BACKEND=knowledge_hub`.
+- Preserved Chroma export/rollback artifact for the old local KB.
 - MCP wrapper named `dante-multimodal-rag`.
 - CLI launch aliases such as `dantedash`, `dantevision`, and `dante menu`.
 
@@ -65,15 +66,16 @@ folder and is not copied into `uploads/`.
 
 ## Local Data Stores
 
-The dashboard now uses Knowledge Hub as the primary read backend for text
-search, chat retrieval source cards, stats, item lookup, and previews. Chroma is
-still kept on disk and available as fallback for image-query search until that
-path is decided separately.
+The dashboard now uses Knowledge Hub as the operational read backend for text
+search, chat retrieval source cards, stats, item lookup, previews, and
+image-query search. The DanteDash visual package corpus is scoped in the
+Knowledge Hub Qdrant collection as `kb_slug=dantedash`; Chroma is kept on disk
+only as a cold export/rollback artifact during the stability window.
 
 The dashboard uses two local app stores:
 
-- `chroma_db/` stores the preserved Chroma KB content, embeddings, retrieval
-  nodes, and image-query fallback path.
+- `chroma_db/` stores the preserved Chroma KB content for explicit rollback or
+  certification comparison only. Strict runtime reads must not use it.
 - `backend/app_state/chat.sqlite` stores product chat state: projects, threads,
   messages, thread summaries, curated project memory, selected model/top_k, and
   per-answer source snapshots.
@@ -131,11 +133,13 @@ Manual foreground start:
 /Users/vidigal/codex/dantedash/scripts/start-dante-multimodal-rag.sh
 ```
 
-The launcher defaults to:
+The launcher defaults to strict KH-native reads:
 
 ```bash
 DANTEDASH_KB_BACKEND=knowledge_hub
-DANTEDASH_CHROMA_FALLBACK_ENABLED=true
+DANTEDASH_CHROMA_FALLBACK_ENABLED=false
+DANTEDASH_STRICT_NO_CHROMA=true
+DANTEDASH_CHROMA_VISUAL_RESCUE_ENABLED=false
 ```
 
 Rollback for a session remains:

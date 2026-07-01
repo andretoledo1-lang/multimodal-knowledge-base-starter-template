@@ -13,7 +13,7 @@ BACKEND_ROOT = REPO_ROOT / "backend"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
 
-from app.kb_cutover_score import score_cutover_certification  # noqa: E402
+from app.kb_cutover_score import CUTOVER_GATE, score_cutover_certification  # noqa: E402
 from app.kb_parity import evaluate_result_parity  # noqa: E402
 from app.knowledge_hub_client import sanitize_public_payload  # noqa: E402
 
@@ -74,7 +74,7 @@ def _safe_failure(reason: str) -> dict[str, Any]:
     return {
         "score": 0.0,
         "raw_weighted_score": 0.0,
-        "gate": 0.89,
+        "gate": CUTOVER_GATE,
         "passed": False,
         "decision": "no_go_continue_repairs",
         "dimensions": [],

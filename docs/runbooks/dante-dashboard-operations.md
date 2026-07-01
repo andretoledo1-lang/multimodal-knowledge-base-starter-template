@@ -32,8 +32,8 @@ existing aliases and Electron health checks keep working.
 - Black Label graph view: read-only LightRAG GraphML explorer where the local
   graph source is configured or present.
 - Knowledge Hub cockpit: read-only inspection of the external KH API, Actions
-  bridge, KB catalog, topology, retrieval, Graph, Vault Index, and multimodal
-  Chroma search.
+  bridge, KB catalog, topology, retrieval, Graph, Vault Index, and KH-native
+  multimodal package search.
 - DanteDash KB reads: KH-native for text search, chat source cards, stats,
   library, previews, and image-query search; Chroma fallback is disabled by
   default and kept only as an explicit rollback mode.
@@ -67,6 +67,8 @@ The launcher defaults to KH-native reads with Chroma fallback disabled:
 ```bash
 DANTEDASH_KB_BACKEND=knowledge_hub
 DANTEDASH_CHROMA_FALLBACK_ENABLED=false
+DANTEDASH_STRICT_NO_CHROMA=true
+DANTEDASH_CHROMA_VISUAL_RESCUE_ENABLED=false
 ```
 
 To temporarily run the old Chroma-primary mode for a session:
@@ -119,9 +121,13 @@ metadata and must not expose absolute local paths in normal HTTP payloads.
 
 ## Local App State
 
-DanteDash keeps Knowledge Base data and chat workspace state separate:
+DanteDash keeps Knowledge Base read state and chat workspace state separate:
 
-- Chroma: `chroma_db/` stores indexed KB nodes, embeddings, and retrieval data.
+- Knowledge Hub/Qdrant: operational DanteDash package reads, including
+  text search, image-query, previews, source cards, and stats.
+- Chroma: `chroma_db/` stores the preserved legacy KB for explicit rollback,
+  export, or certification comparison only. It is not part of strict runtime
+  reads.
 - SQLite: `backend/app_state/chat.sqlite` stores projects, threads, messages,
   thread summaries, curated project memory, model/top_k choices, and persisted
   source snapshots for the chat Context panel.
@@ -136,9 +142,11 @@ archiving a temporary thread under the default project. It does not ingest,
 delete, clear, or reindex KB content.
 
 The smoke script now expects `/api/kb/status` to report
-`mode=knowledge_hub`, `chroma_available_as_fallback=false`, and
-`image_query_search=knowledge_hub`. Override with
-`DANTEDASH_CHROMA_FALLBACK_ENABLED=true` for temporary fallback testing, or
+`mode=knowledge_hub`, `chroma_available_as_fallback=false`,
+`strict_no_chroma=true`, `chroma_visual_rescue_enabled=false`,
+`visual_text_rescue=disabled`, and `image_query_search=knowledge_hub`.
+Override with `DANTEDASH_CHROMA_FALLBACK_ENABLED=true` plus
+`DANTEDASH_STRICT_NO_CHROMA=false` only for temporary fallback testing, or
 `DANTE_EXPECTED_KB_BACKEND=chroma` only when intentionally validating
 Chroma-primary rollback.
 
@@ -190,6 +198,8 @@ The Hub tab groups local read-only memory surfaces:
   `http://127.0.0.1:8080`.
 - Knowledge Hub Actions bridge at `KNOWLEDGE_HUB_ACTIONS_BASE_URL`, default
   `http://127.0.0.1:8098`.
+- KH-native DanteDash multimodal packages, scoped in Qdrant as
+  `kb_slug=dantedash`.
 - Black Label Graph View.
 - External Vault Index.
 

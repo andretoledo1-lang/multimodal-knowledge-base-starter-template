@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import sys
+import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
@@ -29,6 +30,8 @@ def main() -> int:
     parser.add_argument("--run-id", default="kh-missing-import-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))
     parser.add_argument("--knowledge-hub-base-url", default="")
     parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument("--max-retries", type=int, default=2, help="Retries per KH import batch before marking it failed.")
+    parser.add_argument("--retry-sleep-s", type=float, default=1.0, help="Base sleep between batch retries.")
     parser.add_argument("--execute", action="store_true", help="Post missing rows to the KH-owned package import endpoint.")
     args = parser.parse_args()
 
@@ -120,6 +123,8 @@ def _execute_import(args: argparse.Namespace, candidates: list[dict[str, Any]]) 
     invalid_count = 0
     failed_count = 0
     batch_reports = []
+    max_retries = max(0, int(args.max_retries))
+    retry_sleep_s = max(0.0, float(args.retry_sleep_s))
     for batch_index, batch_ids in enumerate(batches, start=1):
         rows = _load_chroma_rows(kb, batch_ids)
         missing = sorted(set(batch_ids) - {row["node_id"] for row in rows})
@@ -131,21 +136,14 @@ def _execute_import(args: argparse.Namespace, candidates: list[dict[str, Any]]) 
             "reset_collection": False,
             "rows": rows,
         }
-        response = client.dantedash_import_packages(payload)
-        data = response.get("data") if isinstance(response.get("data"), dict) else {}
-        if not response.get("ok"):
-            failed_count += len(rows)
-            batch_reports.append(
-                {
-                    "batch": batch_index,
-                    "status": "failed",
-                    "row_count": len(rows),
-                    "missing_from_chroma": len(missing),
-                    "error": response.get("error") or "knowledge_hub_import_failed",
-                }
-            )
-            continue
-        status = str(data.get("status") or "unknown")
+        batch_result = _post_import_batch(
+            client,
+            payload,
+            max_retries=max_retries,
+            retry_sleep_s=retry_sleep_s,
+        )
+        data = batch_result.get("data") if isinstance(batch_result.get("data"), dict) else {}
+        status = str(batch_result.get("status") or "failed")
         if status != "indexed":
             failed_count += len(rows)
             invalid_count += int(data.get("invalid_count") or 0)
@@ -155,7 +153,8 @@ def _execute_import(args: argparse.Namespace, candidates: list[dict[str, Any]]) 
                     "status": status,
                     "row_count": len(rows),
                     "missing_from_chroma": len(missing),
-                    "error": data.get("error") or data.get("failure_stage") or "knowledge_hub_import_not_indexed",
+                    "attempts": int(batch_result.get("attempts") or 1),
+                    "error": batch_result.get("error") or "knowledge_hub_import_not_indexed",
                     "invalid_count": int(data.get("invalid_count") or 0),
                 }
             )
@@ -170,6 +169,7 @@ def _execute_import(args: argparse.Namespace, candidates: list[dict[str, Any]]) 
                 "indexed_count": int(data.get("indexed_count") or 0),
                 "invalid_count": int(data.get("invalid_count") or 0),
                 "missing_from_chroma": len(missing),
+                "attempts": int(batch_result.get("attempts") or 1),
                 "manifest_asset_count": data.get("manifest_asset_count"),
             }
         )
@@ -183,6 +183,31 @@ def _execute_import(args: argparse.Namespace, candidates: list[dict[str, Any]]) 
         "mutation_performed": imported_count > 0,
         "batches": batch_reports,
     }
+
+
+def _post_import_batch(
+    client: KnowledgeHubClient,
+    payload: dict[str, Any],
+    *,
+    max_retries: int,
+    retry_sleep_s: float,
+) -> dict[str, Any]:
+    attempts = max_retries + 1
+    last_result: dict[str, Any] = {"status": "failed", "error": "knowledge_hub_import_failed", "attempts": 0}
+    for attempt in range(1, attempts + 1):
+        response = client.dantedash_import_packages(payload)
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        if response.get("ok") and str(data.get("status") or "") == "indexed":
+            return {"status": "indexed", "data": data, "attempts": attempt}
+        last_result = {
+            "status": str(data.get("status") or "failed"),
+            "data": data,
+            "attempts": attempt,
+            "error": response.get("error") or data.get("error") or data.get("failure_stage") or "knowledge_hub_import_failed",
+        }
+        if attempt < attempts and retry_sleep_s > 0:
+            time.sleep(retry_sleep_s * attempt)
+    return last_result
 
 
 def _load_chroma_rows(kb: Any, node_ids: list[str]) -> list[dict[str, Any]]:

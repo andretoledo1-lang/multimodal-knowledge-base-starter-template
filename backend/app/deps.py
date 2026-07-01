@@ -10,6 +10,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .chat_store import ChatStore
+from .chat_runtime import ChatRuntime, ChatRuntimeConfig
 from .kb import KnowledgeBase
 from .kb_backends import ChromaKbBackend, KnowledgeHubKbBackend
 from .kb_gateway import KbGateway
@@ -57,8 +58,12 @@ class Settings:
     knowledge_hub_actions_bearer_token: str | None
     knowledge_hub_timeout_s: float
     knowledge_hub_strict_smoke: bool
+    knowledge_hub_multimodal_corpora: tuple[str, ...]
     dantedash_kb_backend: str
     dantedash_chroma_fallback_enabled: bool
+    dantedash_strict_no_chroma: bool
+    dantedash_chroma_visual_rescue_enabled: bool
+    dantedash_graph_backend: str
 
 
 @lru_cache(maxsize=1)
@@ -66,6 +71,14 @@ def get_settings() -> Settings:
     voyage_api_key = os.getenv("VOYAGE_API_KEY", "").strip()
     deepseek_api_key = os.getenv("DEEPSEEK_API_KEY", "").strip()
     cohere_api_key = os.getenv("COHERE_API_KEY", "").strip() or None
+    dantedash_kb_backend = os.getenv("DANTEDASH_KB_BACKEND", "knowledge_hub").strip().lower() or "knowledge_hub"
+    dantedash_strict_no_chroma = os.getenv("DANTEDASH_STRICT_NO_CHROMA", "true").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    needs_local_chroma_runtime = dantedash_kb_backend != "knowledge_hub" or not dantedash_strict_no_chroma
     enable_cohere_rerank = os.getenv("ENABLE_COHERE_RERANK", "true").strip().lower() not in {
         "0",
         "false",
@@ -73,7 +86,7 @@ def get_settings() -> Settings:
         "off",
     }
 
-    if not voyage_api_key:
+    if needs_local_chroma_runtime and not voyage_api_key:
         raise RuntimeError(
             "VOYAGE_API_KEY is not set. Set it in backend/.env before starting the sidecar."
         )
@@ -81,7 +94,7 @@ def get_settings() -> Settings:
         raise RuntimeError(
             "DEEPSEEK_API_KEY is not set. Set it in backend/.env before starting the sidecar."
         )
-    if enable_cohere_rerank and not cohere_api_key:
+    if needs_local_chroma_runtime and enable_cohere_rerank and not cohere_api_key:
         raise RuntimeError(
             "COHERE_API_KEY is not set while ENABLE_COHERE_RERANK=true."
         )
@@ -125,9 +138,17 @@ def get_settings() -> Settings:
         knowledge_hub_timeout_s=float(os.getenv("KNOWLEDGE_HUB_TIMEOUT_S", "4")),
         knowledge_hub_strict_smoke=os.getenv("KNOWLEDGE_HUB_STRICT_SMOKE", "false").strip().lower()
         in {"1", "true", "yes", "on"},
-        dantedash_kb_backend=os.getenv("DANTEDASH_KB_BACKEND", "knowledge_hub").strip().lower() or "knowledge_hub",
+        knowledge_hub_multimodal_corpora=_setting_csv_tuple("KNOWLEDGE_HUB_MULTIMODAL_CORPORA", ""),
+        dantedash_kb_backend=dantedash_kb_backend,
         dantedash_chroma_fallback_enabled=os.getenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", "false").strip().lower()
         in {"1", "true", "yes", "on"},
+        dantedash_strict_no_chroma=dantedash_strict_no_chroma,
+        dantedash_chroma_visual_rescue_enabled=os.getenv(
+            "DANTEDASH_CHROMA_VISUAL_RESCUE_ENABLED",
+            "false",
+        ).strip().lower()
+        in {"1", "true", "yes", "on"},
+        dantedash_graph_backend=os.getenv("DANTEDASH_GRAPH_BACKEND", "local").strip().lower() or "local",
     )
 
 
@@ -137,6 +158,21 @@ def _setting_path(name: str, default: Path) -> Path:
         return default
     path = Path(raw).expanduser()
     return path if path.is_absolute() else BASE_DIR / path
+
+
+def _setting_csv_tuple(name: str, default: str = "") -> tuple[str, ...]:
+    raw = os.getenv(name, default).strip()
+    if not raw:
+        return ()
+    seen: set[str] = set()
+    values: list[str] = []
+    for item in raw.split(","):
+        value = item.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        values.append(value)
+    return tuple(values)
 
 
 @lru_cache(maxsize=1)
@@ -190,13 +226,46 @@ def get_knowledge_hub_client() -> KnowledgeHubClient:
 
 
 @lru_cache(maxsize=1)
+def get_chat_runtime() -> ChatRuntime:
+    s = get_settings()
+    return ChatRuntime(
+        ChatRuntimeConfig(
+            deepseek_api_key=s.deepseek_api_key,
+            deepseek_model=s.deepseek_model,
+            deepseek_base_url=s.deepseek_base_url,
+            codex_bin=s.codex_bin,
+            codex_oauth_model=s.codex_oauth_model,
+            codex_oauth_reasoning_effort=s.codex_oauth_reasoning_effort,
+            codex_oauth_timeout_s=s.codex_oauth_timeout_s,
+            claude_bin=s.claude_bin,
+            claude_sonnet_model=s.claude_sonnet_model,
+            claude_opus_model=s.claude_opus_model,
+            claude_haiku_model=s.claude_haiku_model,
+            claude_sonnet_effort=s.claude_sonnet_effort,
+            claude_opus_effort=s.claude_opus_effort,
+            claude_haiku_effort=s.claude_haiku_effort,
+            claude_judge_effort=s.claude_judge_effort,
+            claude_oauth_timeout_s=s.claude_oauth_timeout_s,
+            claude_oauth_premium_timeout_s=s.claude_oauth_premium_timeout_s,
+            claude_premium_repair_cap=s.claude_premium_repair_cap,
+        )
+    )
+
+
+@lru_cache(maxsize=1)
 def get_kb_gateway() -> KbGateway:
     s = get_settings()
     return KbGateway(
         mode=s.dantedash_kb_backend,
         chroma=lambda: ChromaKbBackend(get_kb()),
-        knowledge_hub=KnowledgeHubKbBackend(get_knowledge_hub_client()),
+        knowledge_hub=KnowledgeHubKbBackend(
+            get_knowledge_hub_client(),
+            multimodal_corpora=s.knowledge_hub_multimodal_corpora,
+        ),
         chroma_fallback_enabled=s.dantedash_chroma_fallback_enabled,
+        chroma_visual_rescue_enabled=s.dantedash_chroma_visual_rescue_enabled,
+        strict_no_chroma=s.dantedash_strict_no_chroma,
+        chat_runtime=get_chat_runtime(),
     )
 
 
