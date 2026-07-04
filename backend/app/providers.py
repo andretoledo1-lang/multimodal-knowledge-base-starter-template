@@ -208,6 +208,61 @@ class DeepSeekChatClient:
 
 
 @dataclass
+class GeminiChatClient:
+    """Non-streaming chat client for Google Gemini (generativelanguage REST)."""
+
+    api_key: str
+    model: str = "gemini-3-flash-preview"
+    base_url: str = "https://generativelanguage.googleapis.com/v1beta"
+    timeout_s: float = 180.0
+
+    def complete_chat(self, messages: list[dict[str, str]]) -> str:
+        return "".join(self.stream_chat(messages))
+
+    def stream_chat(self, messages: list[dict[str, str]]) -> Iterator[str]:
+        system_parts = [m.get("content", "") for m in messages if m.get("role") == "system"]
+        contents: list[dict[str, Any]] = []
+        for message in messages:
+            role = message.get("role")
+            if role == "system":
+                continue
+            gemini_role = "model" if role == "assistant" else "user"
+            contents.append({"role": gemini_role, "parts": [{"text": message.get("content", "")}]})
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+            "safetySettings": [
+                {"category": category, "threshold": "BLOCK_NONE"}
+                for category in (
+                    "HARM_CATEGORY_HARASSMENT",
+                    "HARM_CATEGORY_HATE_SPEECH",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    "HARM_CATEGORY_DANGEROUS_CONTENT",
+                )
+            ],
+        }
+        if system_parts:
+            payload["system_instruction"] = {"parts": [{"text": "\n\n".join(system_parts)}]}
+
+        url = f"{self.base_url.rstrip('/')}/models/{self.model}:generateContent"
+        response = httpx.post(url, params={"key": self.api_key}, json=payload, timeout=self.timeout_s)
+        if response.status_code >= 400:
+            raise ProviderError(f"Gemini chat HTTP {response.status_code}: {response.text[:500]}")
+
+        body = response.json()
+        candidates = body.get("candidates") or []
+        if not candidates:
+            feedback = body.get("promptFeedback") or {}
+            raise ProviderError(f"Gemini chat returned no candidates: {json.dumps(feedback)[:300]}")
+        parts = candidates[0].get("content", {}).get("parts") or []
+        text = "".join(str(part.get("text", "")) for part in parts)
+        if not text.strip():
+            raise ProviderError("Gemini chat returned an empty answer.")
+        yield text
+
+
+@dataclass
 class CodexOAuthChatClient:
     """Non-streaming chat client backed by the local Codex OAuth session."""
 
@@ -377,6 +432,10 @@ def _claude_oauth_env() -> dict[str, str]:
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
+        # Allow the headless `claude --print` judge to run even when the caller
+        # is itself a Claude Code session (nested-session guard reads CLAUDECODE).
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
     ):
         env.pop(key, None)
     return env

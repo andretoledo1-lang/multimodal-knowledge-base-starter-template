@@ -14,4 +14,5 @@ dante_default_chroma_fallback_for_backend() {
 dante_export_kb_runtime_defaults() {
   export DANTEDASH_KB_BACKEND="${DANTEDASH_KB_BACKEND:-knowledge_hub}"
   export DANTEDASH_CHROMA_FALLBACK_ENABLED="${DANTEDASH_CHROMA_FALLBACK_ENABLED:-false}"
+  export DANTEDASH_CURATORIAL_RERANK="${DANTEDASH_CURATORIAL_RERANK:-false}"
 }

@@ -203,6 +203,17 @@ V1 is explicitly read-only. Do not add UI or proxy routes for KH ingest, phase2,
 workspace sync, jobs, evals, inbox staging, start/stop, reindex, or vault
 mutation without a separate operator-control plan.
 
+## Docling Cinema PDF Batches
+
+Docling cinema batches are a pre-ingest conversion workflow, not a dashboard
+runtime mutation. Use `docs/runbooks/docling-cinema-batches.md` to inventory
+external cinema PDFs, assign Docling lanes, run smoke conversion, resume bounded
+batches, and validate generated Markdown or structured outputs.
+
+The Docling runner must not ingest into Knowledge Hub, LightRAG, multimodal,
+Qdrant, Postgres, Redis, Chroma, the vault, Notion, or CAG packs. Treat its
+outputs as reviewable handoff artifacts for a later ingest plan.
+
 ## MCP Smoke
 
 The MCP wrapper runs from:
