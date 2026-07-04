@@ -64,24 +64,27 @@ class FakeBackend:
 
 
 class FakeKnowledgeHubClient:
-    def __init__(self) -> None:
+    def __init__(self, *, search_items: list[dict] | None = None) -> None:
         self.image_queries: list[tuple[str, int]] = []
+        self.search_payloads: list[dict] = []
+        self.search_items = search_items or [
+            {
+                "node_id": "kh-a",
+                "title": "A",
+                "excerpt": "alpha",
+                "score": 0.9,
+                "metadata": {"id": "kh-a", "source_sha256": "sha-a", "file_path": "/Users/a/secret"},
+            },
+            {"id": "kh-b", "title": "B", "snippet": "beta", "score": 0.8},
+            {"id": "kh-c", "title": "C", "snippet": "gamma", "score": 0.7},
+        ]
 
-    def dantedash_search_packages(self, _payload):
+    def dantedash_search_packages(self, payload):
+        self.search_payloads.append(dict(payload))
         return {
             "ok": True,
             "data": {
-                "items": [
-                    {
-                        "node_id": "kh-a",
-                        "title": "A",
-                        "excerpt": "alpha",
-                        "score": 0.9,
-                        "metadata": {"id": "kh-a", "source_sha256": "sha-a", "file_path": "/Users/a/secret"},
-                    },
-                    {"id": "kh-b", "title": "B", "snippet": "beta", "score": 0.8},
-                    {"id": "kh-c", "title": "C", "snippet": "gamma", "score": 0.7},
-                ]
+                "items": self.search_items
             },
         }
 
@@ -124,7 +127,9 @@ class FakeKnowledgeHubClient:
     def dantedash_package_item(self, item_id, *, include_private=False):
         metadata = {"id": item_id, "source_sha256": "sha-a", "modality": "image", "original_name": "A"}
         if include_private:
-            metadata["file_path"] = "/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/visual-reference-assets/source-assets/a.jpg"
+            metadata["file_path"] = (
+                "/Users/vidigal/Obsidian_Dante_AI_RAG_DATA/visual-reference-assets/source-assets/a.jpg"
+            )
         return {
             "ok": True,
             "data": {
@@ -137,6 +142,29 @@ class FakeKnowledgeHubClient:
                 "nodes": [{"node_id": item_id, "metadata": metadata, "snippet": "alpha"}],
             },
         }
+
+
+def curatorial_search_items() -> list[dict]:
+    return [
+        {
+            "node_id": "generic-board",
+            "title": "dooh spectacle board",
+            "score": 0.95,
+            "metadata": {"id": "generic-board", "modality": "text"},
+        },
+        {
+            "node_id": "premium-frame",
+            "title": "barry-lyndon-1975-042 premium decoupage",
+            "score": 0.55,
+            "metadata": {
+                "id": "premium-frame",
+                "artifact_type": "visual_decoupage_bundle",
+                "group": "barry-lyndon-1975",
+                "preview_image_file_id": "preview-premium-frame",
+                "editorial_tier": "premium_s_tier",
+            },
+        },
+    ]
 
 
 class FailingImageQueryKnowledgeHubClient(FakeKnowledgeHubClient):
@@ -464,6 +492,92 @@ def test_knowledge_hub_backend_bounds_search_results_to_top_k() -> None:
 
     filtered_results = backend.search_image("/tmp/query.jpg", top_k=2, modality_filter=["image"])
     assert [result.node_id for result in filtered_results] == ["kh-image-a"]
+
+
+def test_knowledge_hub_backend_curatorial_rerank_is_disabled_by_default() -> None:
+    client = FakeKnowledgeHubClient(search_items=curatorial_search_items())
+    backend = KnowledgeHubKbBackend(client)
+
+    results = backend.search_text("me mostre shots incriveis s-tier", top_k=2)
+
+    assert [result.node_id for result in results] == ["generic-board", "premium-frame"]
+    assert client.search_payloads[0]["top_k"] == 2
+    assert "curatorial_score" not in results[0].metadata
+
+
+def test_knowledge_hub_backend_curatorial_rerank_reorders_when_enabled() -> None:
+    client = FakeKnowledgeHubClient(search_items=curatorial_search_items())
+    backend = KnowledgeHubKbBackend(client, enable_curatorial_rerank=True)
+
+    results = backend.search_text("me mostre shots incriveis s-tier", top_k=2)
+
+    assert [result.node_id for result in results] == ["premium-frame", "generic-board"]
+    assert client.search_payloads[0]["top_k"] == 8
+    assert results[0].metadata["curatorial_intent"] == "quality"
+    assert results[0].metadata["curatorial_score"] > results[1].metadata["curatorial_score"]
+    assert results[0].metadata["curatorial_vector_score"] == 0.55
+    assert results[0].score == results[0].metadata["curatorial_score"]
+
+
+def test_knowledge_hub_backend_curatorial_rerank_preserves_top_k_limit() -> None:
+    client = FakeKnowledgeHubClient(
+        search_items=[
+            *curatorial_search_items(),
+            {
+                "node_id": "extra-premium",
+                "title": "aftersun-2022-001 premium decoupage",
+                "score": 0.54,
+                "metadata": {
+                    "id": "extra-premium",
+                    "artifact_type": "visual_decoupage_bundle",
+                    "group": "aftersun-2022",
+                    "preview_image_file_id": "preview-extra-premium",
+                    "editorial_tier": "premium_s_tier",
+                },
+            },
+            {
+                "node_id": "extra-generic",
+                "title": "general archive board",
+                "score": 0.53,
+                "metadata": {"id": "extra-generic", "modality": "text"},
+            },
+        ]
+    )
+    backend = KnowledgeHubKbBackend(client, enable_curatorial_rerank=True)
+
+    results = backend.search_text("me mostre shots incriveis s-tier", top_k=2)
+
+    assert len(results) == 2
+    assert client.search_payloads[0]["top_k"] == 8
+
+
+def test_knowledge_hub_backend_curatorial_rerank_expands_exact_queries_to_full_window() -> None:
+    client = FakeKnowledgeHubClient(search_items=curatorial_search_items())
+    backend = KnowledgeHubKbBackend(client, enable_curatorial_rerank=True)
+
+    results = backend.search_text("Blade Runner 2049 frame 026", top_k=5)
+
+    assert len(results) == 2
+    assert client.search_payloads[0]["top_k"] == 50
+
+
+def test_knowledge_hub_gateway_curatorial_rerank_does_not_construct_chroma() -> None:
+    calls: list[str] = []
+    client = FakeKnowledgeHubClient(search_items=curatorial_search_items())
+
+    def chroma_factory():
+        calls.append("constructed")
+        return FakeBackend()
+
+    gateway = KbGateway(
+        mode="knowledge_hub",
+        chroma=chroma_factory,
+        knowledge_hub=KnowledgeHubKbBackend(client, enable_curatorial_rerank=True),
+        chroma_fallback_enabled=False,
+    )
+
+    assert gateway.search_text("me mostre shots incriveis s-tier", top_k=2)[0].node_id == "premium-frame"
+    assert calls == []
 
 
 def test_knowledge_hub_backend_serves_official_stats_and_listing() -> None:

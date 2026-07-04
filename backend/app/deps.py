@@ -18,6 +18,7 @@ from .knowledge_hub_client import KnowledgeHubClient
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 logger = logging.getLogger(__name__)
+TRUTHY_VALUES = {"1", "true", "yes", "on"}
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class Settings:
     knowledge_hub_strict_smoke: bool
     dantedash_kb_backend: str
     dantedash_chroma_fallback_enabled: bool
+    dantedash_curatorial_rerank: bool
 
 
 @lru_cache(maxsize=1)
@@ -123,12 +125,15 @@ def get_settings() -> Settings:
         ).rstrip("/"),
         knowledge_hub_actions_bearer_token=os.getenv("KNOWLEDGE_HUB_ACTIONS_BEARER_TOKEN", "").strip() or None,
         knowledge_hub_timeout_s=float(os.getenv("KNOWLEDGE_HUB_TIMEOUT_S", "4")),
-        knowledge_hub_strict_smoke=os.getenv("KNOWLEDGE_HUB_STRICT_SMOKE", "false").strip().lower()
-        in {"1", "true", "yes", "on"},
+        knowledge_hub_strict_smoke=_env_truthy("KNOWLEDGE_HUB_STRICT_SMOKE"),
         dantedash_kb_backend=os.getenv("DANTEDASH_KB_BACKEND", "knowledge_hub").strip().lower() or "knowledge_hub",
-        dantedash_chroma_fallback_enabled=os.getenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", "false").strip().lower()
-        in {"1", "true", "yes", "on"},
+        dantedash_chroma_fallback_enabled=_env_truthy("DANTEDASH_CHROMA_FALLBACK_ENABLED"),
+        dantedash_curatorial_rerank=_env_truthy("DANTEDASH_CURATORIAL_RERANK"),
     )
+
+
+def _env_truthy(name: str, *, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in TRUTHY_VALUES
 
 
 def _setting_path(name: str, default: Path) -> Path:
@@ -195,7 +200,10 @@ def get_kb_gateway() -> KbGateway:
     return KbGateway(
         mode=s.dantedash_kb_backend,
         chroma=lambda: ChromaKbBackend(get_kb()),
-        knowledge_hub=KnowledgeHubKbBackend(get_knowledge_hub_client()),
+        knowledge_hub=KnowledgeHubKbBackend(
+            get_knowledge_hub_client(),
+            enable_curatorial_rerank=s.dantedash_curatorial_rerank,
+        ),
         chroma_fallback_enabled=s.dantedash_chroma_fallback_enabled,
     )
 
