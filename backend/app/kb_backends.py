@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from .curatorial_rerank import curatorial_rerank, detect_curatorial_intent
 from .kb import KnowledgeBase, ProgressCallback, SearchResult, _noop
 from .knowledge_hub_client import KnowledgeHubClient, sanitize_public_payload
 
@@ -158,8 +159,9 @@ class ChromaKbBackend:
 class KnowledgeHubKbBackend:
     backend_id = "knowledge_hub"
 
-    def __init__(self, client: KnowledgeHubClient) -> None:
+    def __init__(self, client: KnowledgeHubClient, *, enable_curatorial_rerank: bool = False) -> None:
         self.client = client
+        self.enable_curatorial_rerank = enable_curatorial_rerank
 
     def count(self) -> int:
         data = self._dantedash_stats()
@@ -189,7 +191,16 @@ class KnowledgeHubKbBackend:
         modality_filter: list[str] | None = None,
         on_progress: ProgressCallback = _noop,
     ) -> list[SearchResult]:
-        payload: dict[str, Any] = {"query": query, "top_k": top_k}
+        if self.enable_curatorial_rerank:
+            result_limit, candidate_limit = _bounded_search_window(
+                top_k,
+                expand=True,
+                exact=detect_curatorial_intent(query) == "exact",
+            )
+        else:
+            result_limit = top_k
+            candidate_limit = top_k
+        payload: dict[str, Any] = {"query": query, "top_k": candidate_limit}
         if modality_filter:
             payload["modality_filter"] = modality_filter
         response = self.client.dantedash_search_packages(payload)
@@ -199,7 +210,10 @@ class KnowledgeHubKbBackend:
         items = data.get("items") if isinstance(data, dict) else []
         if not isinstance(items, list):
             raise KbBackendUnavailable("knowledge_hub_items_malformed")
-        bounded_items = [item for item in items if isinstance(item, dict)][:top_k]
+        valid_items = [item for item in items if isinstance(item, dict)]
+        if self.enable_curatorial_rerank:
+            valid_items = curatorial_rerank(query, valid_items, limit=result_limit).items
+        bounded_items = valid_items[:result_limit]
         return [_item_to_result(item, index) for index, item in enumerate(bounded_items)]
 
     def search_image(
@@ -210,8 +224,7 @@ class KnowledgeHubKbBackend:
         modality_filter: list[str] | None = None,
         on_progress: ProgressCallback = _noop,
     ) -> list[SearchResult]:
-        limit = max(1, min(int(top_k), 50))
-        request_top_k = max(1, min(limit * 4 if modality_filter else limit, 50))
+        limit, request_top_k = _bounded_search_window(top_k, expand=bool(modality_filter))
         last_error = "knowledge_hub_image_search_unavailable"
         data: dict[str, Any] | None = None
         for attempt in range(2):
@@ -321,7 +334,9 @@ def _item_to_result(item: dict[str, Any], index: int) -> SearchResult:
     title = title or _first_text(item, "display_name", "title", "source_title", "document_title") or file_id
     modality = _first_text(metadata, "modality", "media_type") or _first_text(item, "modality", "media_type") or "text"
     snippet = _first_text(item, "snippet", "excerpt", "text", "content", "chunk_text", "summary") or ""
-    score = _first_number(item, "score", "rerank_score", "similarity", "vector_score")
+    score = _first_number(metadata, "curatorial_score")
+    if score is None:
+        score = _first_number(item, "score", "rerank_score", "similarity", "vector_score")
     metadata.setdefault("id", file_id)
     metadata.setdefault("original_name", title)
     metadata.setdefault("modality", modality)
@@ -358,6 +373,14 @@ def _first_number(item: dict[str, Any], *keys: str) -> float | None:
         if isinstance(value, int | float):
             return float(value)
     return None
+
+
+def _bounded_search_window(top_k: int, *, expand: bool, exact: bool = False) -> tuple[int, int]:
+    limit = max(1, min(int(top_k), 50))
+    if expand and exact:
+        return limit, 50
+    candidate_limit = max(1, min(limit * 4 if expand else limit, 50))
+    return limit, candidate_limit
 
 
 def _preview_path_from_meta(meta: dict[str, Any]) -> Path | None:
