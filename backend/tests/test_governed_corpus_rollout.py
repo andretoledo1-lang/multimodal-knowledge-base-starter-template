@@ -18,11 +18,17 @@ def sha256_bytes(value: bytes) -> str:
 
 def write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def read_jsonl(path: Path) -> list[dict]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 @pytest.fixture(autouse=True)
@@ -38,9 +44,16 @@ def capability_profile() -> dict:
         "profile_id": "fixture-production-profile",
         "status": "active",
         "graph_runtime": {
-            "extraction_and_merge": {"provider": "deepseek", "model": "deepseek-v4-pro"},
+            "extraction_and_merge": {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+            },
             "embeddings": {"provider": "voyage", "model": "voyage-4-large"},
-            "retrieval_rerank": {"provider": "cohere", "model": "rerank-v4.0-pro", "retrieval_only": True},
+            "retrieval_rerank": {
+                "provider": "cohere",
+                "model": "rerank-v4.0-pro",
+                "retrieval_only": True,
+            },
         },
         "ingestion_policy": {
             "accepted_unit": "rights_safe_curated_card",
@@ -70,7 +83,9 @@ def runtime_capabilities(profile_path: Path, *, lightrag_allowed: bool = True) -
             "status": "available" if lightrag_allowed else "unavailable",
             "blocking": not lightrag_allowed,
             "scope": "lightrag_mutation",
-            "evidence_refs": [f"/live_read_only_observations/lightrag/{capability_id.rsplit('.', 1)[-1]}"],
+            "evidence_refs": [
+                f"/live_read_only_observations/lightrag/{capability_id.rsplit('.', 1)[-1]}"
+            ],
         }
         for capability_id in sorted(required)
     ]
@@ -118,7 +133,10 @@ def runtime_capabilities(profile_path: Path, *, lightrag_allowed: bool = True) -
                 "decision": "allowed" if lightrag_allowed else "blocked",
                 "blockers": [] if lightrag_allowed else sorted(required),
             },
-            "knowledge_hub_promotion": {"decision": "blocked", "blockers": ["fixture-deferred"]},
+            "knowledge_hub_promotion": {
+                "decision": "blocked",
+                "blockers": ["fixture-deferred"],
+            },
         },
     }
 
@@ -131,7 +149,12 @@ def eligible_rights() -> dict:
         "external_processing": True,
         "allowed_providers": ["deepseek", "voyage", "cohere"],
         "allowed_regions": ["approved-fixture-region"],
-        "allowed_source_derived_fields": ["title", "summary", "heading_seeds", "relationships"],
+        "allowed_source_derived_fields": [
+            "title",
+            "summary",
+            "heading_seeds",
+            "relationships",
+        ],
         "evidence_refs": [],
         "evidence_predicates": {
             "provenance_present": True,
@@ -151,12 +174,21 @@ def eligible_rights() -> dict:
     }
 
 
-def source_entry(relative_path: str, body: bytes, *, role: str, topic: str, rights: dict | None = None) -> dict:
+def source_entry(
+    relative_path: str,
+    body: bytes,
+    *,
+    role: str,
+    topic: str,
+    rights: dict | None = None,
+) -> dict:
     source_sha = sha256_bytes(body)
     rights_payload = rights or eligible_rights()
     return {
         "relative_path": relative_path,
-        "media_type": "image/png" if relative_path.endswith(".png") else "text/markdown",
+        "media_type": "image/png"
+        if relative_path.endswith(".png")
+        else "text/markdown",
         "size_bytes": len(body),
         "source_sha256": source_sha,
         "source_id": f"source_{source_sha[:20]}",
@@ -165,7 +197,9 @@ def source_entry(relative_path: str, body: bytes, *, role: str, topic: str, righ
         "topic_id": topic,
         "card_role": role,
         "risk_rank": 10,
-        "inventory_disposition": "selected" if rights_payload["apply_eligible"] else "blocked",
+        "inventory_disposition": "selected"
+        if rights_payload["apply_eligible"]
+        else "blocked",
         **rights_payload,
     }
 
@@ -240,7 +274,9 @@ def materialize_value_evidence(
         artifact_path,
         {
             "schema_version": "fixture.governed_eval_results.v1",
-            "candidate_metrics": {key: candidate[key] for key in subject.VALUE_CANDIDATE_METRIC_KEYS},
+            "candidate_metrics": {
+                key: candidate[key] for key in subject.VALUE_CANDIDATE_METRIC_KEYS
+            },
         },
     )
     artifact_manifest_ref = "evidence/value-artifacts.json"
@@ -249,7 +285,12 @@ def materialize_value_evidence(
         artifact_manifest_path,
         {
             "schema_version": subject.VALUE_ARTIFACT_MANIFEST_SCHEMA_VERSION,
-            "artifacts": [{"artifact_ref": artifact_ref, "sha256": subject.sha256_file(artifact_path)}],
+            "artifacts": [
+                {
+                    "artifact_ref": artifact_ref,
+                    "sha256": subject.sha256_file(artifact_path),
+                }
+            ],
         },
     )
     capabilities = json.loads(capabilities_path.read_text(encoding="utf-8"))
@@ -261,12 +302,16 @@ def materialize_value_evidence(
             "schema_version": subject.VALUE_EVIDENCE_SCHEMA_VERSION,
             "certificate_id": candidate["certificate_id"],
             "evaluated_at": candidate["evaluated_at"],
-            "evaluated_repository_revision": capabilities["dependency_provenance"]["repository_head"]["revision"],
+            "evaluated_repository_revision": capabilities["dependency_provenance"][
+                "repository_head"
+            ]["revision"],
             "corpus_digest_sha256": policy["inventory_contract"]["audit_digest_sha256"],
             "holdout_sha256": policy["holdout_contract"]["contract_sha256"],
             "production_profile_sha256": subject.sha256_file(profile_path),
             "runtime_capabilities_sha256": subject.sha256_file(capabilities_path),
-            "candidate_metrics": {key: candidate[key] for key in subject.VALUE_CANDIDATE_METRIC_KEYS},
+            "candidate_metrics": {
+                key: candidate[key] for key in subject.VALUE_CANDIDATE_METRIC_KEYS
+            },
             "artifact_manifest_ref": artifact_manifest_ref,
             "artifact_manifest_sha256": subject.sha256_file(artifact_manifest_path),
         },
@@ -339,7 +384,8 @@ def policy_manifest(sources: list[dict], *, capability_green: bool = True) -> di
                 "expected_member_count": len(sources),
                 "evidence_available": "Hash-bound fixture rights record.",
                 "required_true_predicates": sorted(
-                    subject.UNIVERSAL_EVIDENCE_PREDICATES | subject.PROVIDER_EVIDENCE_PREDICATES
+                    subject.UNIVERSAL_EVIDENCE_PREDICATES
+                    | subject.PROVIDER_EVIDENCE_PREDICATES
                 ),
                 "current_rights_status": "verified_clear",
                 "permitted_local_uses": ["local_embedding", "derived_summary"],
@@ -445,7 +491,12 @@ def policy_manifest(sources: list[dict], *, capability_green: bool = True) -> di
             ],
             "total_ceiling": 1.0,
             "reservation_status": "reserved",
-            "source_derived_fields": ["title", "summary", "heading_seeds", "relationships"],
+            "source_derived_fields": [
+                "title",
+                "summary",
+                "heading_seeds",
+                "relationships",
+            ],
             "external_processing": True,
             "reactivation_requirements": [],
         },
@@ -453,10 +504,16 @@ def policy_manifest(sources: list[dict], *, capability_green: bool = True) -> di
             "audit_mode": "read_only",
             "lightrag": {
                 "status": "green" if capability_green else "blocked",
-                "required_capabilities": sorted(subject.POLICY_REQUIRED_LIGHTRAG_CAPABILITIES),
+                "required_capabilities": sorted(
+                    subject.POLICY_REQUIRED_LIGHTRAG_CAPABILITIES
+                ),
                 "mutation_eligible": capability_green,
             },
-            "knowledge_hub": {"status": "deferred", "required_capabilities": [], "promotion_eligible": False},
+            "knowledge_hub": {
+                "status": "deferred",
+                "required_capabilities": [],
+                "promotion_eligible": False,
+            },
         },
         "audit_contract": {
             "mode": "read_only",
@@ -481,7 +538,10 @@ def make_fixture(
     markdown_body: bytes | None = None,
 ) -> subject.GovernedCorpusConfig:
     source_root = tmp_path / "source"
-    markdown = markdown_body or b"# Raw marker that must never enter artifacts\n\nSensitive source body.\n"
+    markdown = (
+        markdown_body
+        or b"# Raw marker that must never enter artifacts\n\nSensitive source body.\n"
+    )
     image = b"\x89PNG\r\n\x1a\nfixture-binary-marker"
     (source_root / "01-notes").mkdir(parents=True)
     (source_root / "03-assets").mkdir(parents=True)
@@ -503,21 +563,40 @@ def make_fixture(
             "apply_eligible": False,
             "blocking_reasons": ["rights_unknown"],
         }
-        rights["evidence_predicates"] = {key: False for key in rights["evidence_predicates"]}
+        rights["evidence_predicates"] = {
+            key: False for key in rights["evidence_predicates"]
+        }
         rights["evidence_refs"] = []
 
     sources = [
-        source_entry("01-notes/guide.md", markdown, role="source_card", topic="camera", rights=rights),
-        source_entry("03-assets/frame.png", image, role="visual_evidence_card", topic="visual", rights=rights),
+        source_entry(
+            "01-notes/guide.md",
+            markdown,
+            role="source_card",
+            topic="camera",
+            rights=rights,
+        ),
+        source_entry(
+            "03-assets/frame.png",
+            image,
+            role="visual_evidence_card",
+            topic="visual",
+            rights=rights,
+        ),
     ]
     profile_path = tmp_path / "profile.json"
     write_json(profile_path, capability_profile())
     capabilities_path = tmp_path / "runtime-capabilities.json"
-    write_json(capabilities_path, runtime_capabilities(profile_path, lightrag_allowed=lightrag_allowed))
+    write_json(
+        capabilities_path,
+        runtime_capabilities(profile_path, lightrag_allowed=lightrag_allowed),
+    )
     policy_path = tmp_path / "policy.json"
     materialize_rights_evidence(policy_path.parent, sources)
     policy = policy_manifest(sources, capability_green=lightrag_allowed)
-    materialize_value_evidence(policy_path.parent, policy, profile_path, capabilities_path)
+    materialize_value_evidence(
+        policy_path.parent, policy, profile_path, capabilities_path
+    )
     write_json(policy_path, policy)
     return subject.GovernedCorpusConfig(
         run_id="fixture-run",
@@ -525,24 +604,39 @@ def make_fixture(
         policy_manifest=policy_path,
         production_profile=profile_path,
         runtime_capabilities=capabilities_path,
-        artifact_root=subject.p0p8.DEFAULT_PUBLIC_ROOT / "logs" / "fixtures" / tmp_path.name,
+        artifact_root=subject.p0p8.DEFAULT_PUBLIC_ROOT
+        / "logs"
+        / "fixtures"
+        / tmp_path.name,
     )
 
 
-def test_green_dry_run_emits_complete_compatible_artifacts_without_raw_content(tmp_path: Path) -> None:
+def test_legacy_v1_run_emits_complete_fail_closed_artifacts_without_raw_content(
+    tmp_path: Path,
+) -> None:
     config = make_fixture(tmp_path)
 
     result = subject.run_all(config)
 
-    assert result["certification"]["ok"] is True
-    assert result["certification"]["terminal_state"] == "green_dry_run"
+    assert result["certification"]["ok"] is False
+    assert result["certification"]["terminal_state"] == "blocked_no_mutation"
+    assert (
+        "runtime_capabilities_v1_legacy_positive_proof_unsupported"
+        in result["certification"]["blockers"]
+    )
     assert result["certification"]["mutation_performed"] is False
     assert result["certification"]["counts"]["provider_calls"] == 0
     inventory = read_jsonl(config.run_dir / "governed-source-inventory.jsonl")
     expected_digest = subject.inventory_audit_digest(inventory)
     assert result["certification"]["corpus_digest"] == expected_digest
-    assert result["certification"]["policy_inventory_audit_digest_sha256"] == expected_digest
-    assert result["certification"]["observed_inventory_audit_digest_sha256"] == expected_digest
+    assert (
+        result["certification"]["policy_inventory_audit_digest_sha256"]
+        == expected_digest
+    )
+    assert (
+        result["certification"]["observed_inventory_audit_digest_sha256"]
+        == expected_digest
+    )
     assert result["certification"]["inventory_audit_digest_match"] is True
     expected = {
         "governed-source-inventory.jsonl",
@@ -564,7 +658,10 @@ def test_green_dry_run_emits_complete_compatible_artifacts_without_raw_content(t
         "report.md",
     }
     assert expected <= {path.name for path in config.run_dir.iterdir()}
-    serialized = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in config.run_dir.iterdir())
+    serialized = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in config.run_dir.iterdir()
+    )
     assert "Sensitive source body" not in serialized
     assert "fixture-binary-marker" not in serialized
     assert str(tmp_path.resolve()) not in serialized
@@ -575,11 +672,15 @@ def test_green_dry_run_emits_complete_compatible_artifacts_without_raw_content(t
     cag_candidates = read_jsonl(config.run_dir / "cag-pack-candidates.jsonl")
     plans = read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl")
     assert len(normalized) == len(crosswalk) == 2
-    assert {row["schema_version"] for row in normalized} == {"docling_normalized_output.v1"}
+    assert {row["schema_version"] for row in normalized} == {
+        "docling_normalized_output.v1"
+    }
     assert all(row["apply_status"] == "blocked" for row in plans)
-    assert all(row["blocked_reason"] == "p1_controller_not_implemented" for row in plans)
+    assert all(row["blocked_reason"] == "p0_gate_blocked" for row in plans)
     assert all(row["status"] == "blocked" for row in cag_candidates)
-    source_certification = json.loads((config.run_dir / "p0-p8-certification.json").read_text(encoding="utf-8"))
+    source_certification = json.loads(
+        (config.run_dir / "p0-p8-certification.json").read_text(encoding="utf-8")
+    )
     assert source_certification["rollout_schema_version"] == subject.SCHEMA_VERSION
     assert source_certification["governed_p1_authorization"] == {
         "authorized": False,
@@ -588,7 +689,9 @@ def test_green_dry_run_emits_complete_compatible_artifacts_without_raw_content(t
     }
 
 
-def test_finalization_merges_phase_and_certification_blockers_once(tmp_path: Path) -> None:
+def test_finalization_merges_phase_and_certification_blockers_once(
+    tmp_path: Path,
+) -> None:
     config = make_fixture(tmp_path)
     subject._prepare_run_directory(config)
 
@@ -623,7 +726,101 @@ def test_finalization_merges_phase_and_certification_blockers_once(tmp_path: Pat
     assert certification["terminal_state"] == "blocked_no_mutation"
 
 
-def test_unknown_rights_remain_accounted_and_block_all_apply_rows(tmp_path: Path) -> None:
+def test_malformed_null_source_list_fails_closed_without_crashing(
+    tmp_path: Path,
+) -> None:
+    config = make_fixture(tmp_path)
+    policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
+    policy["sources"] = None
+    write_json(config.policy_manifest, policy)
+
+    result = subject.run_all(config)
+
+    assert result["certification"]["terminal_state"] == "blocked_no_mutation"
+    assert "policy_sources_invalid" in result["certification"]["blockers"]
+    gate_vector = result["certification"]["independent_gate_vector"]
+    assert gate_vector is not None
+    assert all(
+        gate["downstream_permission"]["allowed"] is False
+        for gate in gate_vector.values()
+    )
+    assert all(gate["blockers"] for gate in gate_vector.values())
+
+
+def test_global_v2_authority_failure_preserves_inventory_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_fixture(tmp_path)
+    policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
+    policy["schema_version"] = subject.POLICY_SCHEMA_VERSION_V2
+    write_json(config.policy_manifest, policy)
+    monkeypatch.setattr(subject, "_validate_policy", lambda _policy: [])
+    monkeypatch.setattr(
+        subject,
+        "_validate_evidence_generation_files",
+        lambda *_args, **_kwargs: ["authority_observation_schema_invalid"],
+    )
+
+    result = subject.run_all(config)
+    inventory = read_jsonl(config.run_dir / "governed-source-inventory.jsonl")
+    rights = read_jsonl(config.run_dir / "governed-rights-registry.jsonl")
+
+    assert result["certification"]["terminal_state"] == "blocked_no_mutation"
+    assert len(inventory) == len(rights) == 2
+    assert all(row["apply_eligible"] is False for row in rights)
+    assert "authority_observation_schema_invalid" in result["certification"][
+        "blockers"
+    ]
+
+
+def test_final_source_reconciliation_detects_post_snapshot_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_fixture(tmp_path)
+    original = subject._build_cards
+
+    def build_then_mutate(*args: object, **kwargs: object) -> object:
+        result = original(*args, **kwargs)
+        source_path = config.source_root / "01-notes" / "guide.md"
+        source_path.write_text("changed after inventory snapshot\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(subject, "_build_cards", build_then_mutate)
+
+    result = subject.run_all(config)
+
+    assert result["certification"]["terminal_state"] == "blocked_no_mutation"
+    assert any(
+        blocker.startswith("source_reconciliation_content_drift:")
+        for blocker in result["certification"]["blockers"]
+    )
+
+
+def test_final_contract_reconciliation_detects_policy_deletion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = make_fixture(tmp_path)
+    original = subject._build_cards
+
+    def build_then_delete_policy(*args: object, **kwargs: object) -> object:
+        result = original(*args, **kwargs)
+        config.policy_manifest.unlink()
+        return result
+
+    monkeypatch.setattr(subject, "_build_cards", build_then_delete_policy)
+
+    result = subject.run_all(config)
+
+    assert result["certification"]["terminal_state"] == "blocked_no_mutation"
+    assert "final_policy_manifest_missing" in result["certification"]["blockers"]
+
+
+def test_unknown_rights_remain_accounted_and_block_all_apply_rows(
+    tmp_path: Path,
+) -> None:
     config = make_fixture(tmp_path, eligible=False)
 
     result = subject.run_all(config)
@@ -637,20 +834,32 @@ def test_unknown_rights_remain_accounted_and_block_all_apply_rows(tmp_path: Path
     assert {row["rights_status"] for row in rights} == {"unknown"}
     assert all(row["apply_status"] == "blocked" for row in plans)
     assert all(row["blocked_reason"] == "p0_gate_blocked" for row in plans)
-    compatibility_certification = json.loads((config.run_dir / "p0-p8-certification.json").read_text(encoding="utf-8"))
+    compatibility_certification = json.loads(
+        (config.run_dir / "p0-p8-certification.json").read_text(encoding="utf-8")
+    )
     assert compatibility_certification["ok"] is False
     normalized = read_jsonl(config.run_dir / "docling-normalized-output.jsonl")
     cag_candidates = read_jsonl(config.run_dir / "cag-pack-candidates.jsonl")
-    assert all(row["status"] == row["quality_status"] == row["rights_status"] == "blocked" for row in normalized)
-    assert all(row["status"] == "blocked" and not row["evidence_package_keys"] for row in cag_candidates)
+    assert all(
+        row["status"] == row["quality_status"] == row["rights_status"] == "blocked"
+        for row in normalized
+    )
+    assert all(
+        row["status"] == "blocked" and not row["evidence_package_keys"]
+        for row in cag_candidates
+    )
     with pytest.raises(ValueError, match="black_label_source_not_certified"):
         subject.black_label.load_source_bundle(
-            subject.black_label.BlackLabelConfig(run_id="blocked-source-bundle", source_run=config.run_dir)
+            subject.black_label.BlackLabelConfig(
+                run_id="blocked-source-bundle", source_run=config.run_dir
+            )
         )
 
 
 @pytest.mark.parametrize("bad_path", ["../escape.md", "/tmp/private.md", "script.py"])
-def test_invalid_or_unallowlisted_path_blocks_before_card_generation(tmp_path: Path, bad_path: str) -> None:
+def test_invalid_or_unallowlisted_path_blocks_before_card_generation(
+    tmp_path: Path, bad_path: str
+) -> None:
     config = make_fixture(tmp_path)
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
     policy["sources"][0]["relative_path"] = bad_path
@@ -673,28 +882,48 @@ def test_symlink_escape_and_hash_drift_fail_closed(tmp_path: Path) -> None:
     result = subject.run_all(config)
 
     assert result["certification"]["terminal_state"] == "blocked_no_mutation"
-    assert any("source_symlink" in blocker or "source_path_escape" in blocker for blocker in result["certification"]["blockers"])
+    assert any(
+        "source_symlink" in blocker or "source_path_escape" in blocker
+        for blocker in result["certification"]["blockers"]
+    )
 
     linked.unlink()
     linked.write_text("changed bytes", encoding="utf-8")
     second = subject.run_all(replace(config, run_id="hash-drift"))
-    assert any("source_hash_mismatch" in blocker for blocker in second["certification"]["blockers"])
+    assert any(
+        "source_hash_mismatch" in blocker
+        for blocker in second["certification"]["blockers"]
+    )
     assert second["certification"]["inventory_audit_digest_match"] is False
-    assert second["certification"]["policy_inventory_audit_digest_sha256"] != second["certification"]["observed_inventory_audit_digest_sha256"]
-    assert not (second["certification"] and config.artifact_root / "hash-drift" / "black-label-card-manifest.jsonl").exists()
+    assert (
+        second["certification"]["policy_inventory_audit_digest_sha256"]
+        != second["certification"]["observed_inventory_audit_digest_sha256"]
+    )
+    assert not (
+        second["certification"]
+        and config.artifact_root / "hash-drift" / "black-label-card-manifest.jsonl"
+    ).exists()
 
 
 def test_logical_card_id_is_stable_while_revision_changes(tmp_path: Path) -> None:
     config = make_fixture(tmp_path)
     subject.run_all(config)
-    first = next(row for row in read_jsonl(config.run_dir / "black-label-card-manifest.jsonl") if row["card_role"] == "source_card")
+    first = next(
+        row
+        for row in read_jsonl(config.run_dir / "black-label-card-manifest.jsonl")
+        if row["card_role"] == "source_card"
+    )
 
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
     policy["source_classes"][0]["description"] = "A revised bounded fixture summary."
     write_json(config.policy_manifest, policy)
     revised = replace(config, run_id="revised-run")
     subject.run_all(revised)
-    second = next(row for row in read_jsonl(revised.run_dir / "black-label-card-manifest.jsonl") if row["card_role"] == "source_card")
+    second = next(
+        row
+        for row in read_jsonl(revised.run_dir / "black-label-card-manifest.jsonl")
+        if row["card_role"] == "source_card"
+    )
 
     assert first["card_id"] == second["card_id"]
     assert first["payload_hash"] != second["payload_hash"]
@@ -702,7 +931,9 @@ def test_logical_card_id_is_stable_while_revision_changes(tmp_path: Path) -> Non
     assert first["file_source"] == second["file_source"]
 
 
-def test_holdout_is_consumed_without_mutation_or_generated_answer_leak(tmp_path: Path) -> None:
+def test_holdout_is_consumed_without_mutation_or_generated_answer_leak(
+    tmp_path: Path,
+) -> None:
     config = make_fixture(tmp_path)
     before = config.policy_manifest.read_bytes()
 
@@ -725,11 +956,17 @@ def test_holdout_source_body_reuse_is_redacted_from_all_run_artifacts_and_blocks
 ) -> None:
     config = make_fixture(tmp_path)
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
-    raw_body = (config.source_root / "01-notes" / "guide.md").read_text(encoding="utf-8")
-    policy["holdout_contract"]["queries"][0][leak_field] = (
-        [raw_body] if leak_field in {"expected_topic_ids", "answer_criteria"} else raw_body
+    raw_body = (config.source_root / "01-notes" / "guide.md").read_text(
+        encoding="utf-8"
     )
-    policy["holdout_contract"]["contract_sha256"] = subject.holdout_digest(policy["holdout_contract"])
+    policy["holdout_contract"]["queries"][0][leak_field] = (
+        [raw_body]
+        if leak_field in {"expected_topic_ids", "answer_criteria"}
+        else raw_body
+    )
+    policy["holdout_contract"]["contract_sha256"] = subject.holdout_digest(
+        policy["holdout_contract"]
+    )
     materialize_value_evidence(
         config.policy_manifest.parent,
         policy,
@@ -755,7 +992,9 @@ def test_holdout_source_body_reuse_is_redacted_from_all_run_artifacts_and_blocks
     assert "Sensitive source body" not in serialized
 
 
-def test_short_markdown_body_is_detected_in_metadata_and_holdout(tmp_path: Path) -> None:
+def test_short_markdown_body_is_detected_in_metadata_and_holdout(
+    tmp_path: Path,
+) -> None:
     source_root = tmp_path / "source"
     source_root.mkdir()
     relative_path = "short.md"
@@ -772,19 +1011,30 @@ def test_short_markdown_body_is_detected_in_metadata_and_holdout(tmp_path: Path)
     ]
     policy = {
         "sources": [{"relative_path": relative_path, "declared_summary": raw_body}],
-        "source_classes": [{"source_class_id": "notes", "description": "Independent class description."}],
-        "topics": [{"topic_id": "launch", "description": "Independent topic description."}],
+        "source_classes": [
+            {
+                "source_class_id": "notes",
+                "description": "Independent class description.",
+            }
+        ],
+        "topics": [
+            {"topic_id": "launch", "description": "Independent topic description."}
+        ],
     }
     holdout = {"queries": [{"query": raw_body}]}
 
     bodies = subject._normalized_markdown_bodies(inventory, source_root)
 
     assert bodies == [raw_body]
-    assert subject._find_raw_body_metadata_paths(policy, inventory, bodies) == {relative_path}
+    assert subject._find_raw_body_metadata_paths(policy, inventory, bodies) == {
+        relative_path
+    }
     assert subject._find_raw_body_holdout_query_indexes(holdout, bodies) == {0}
 
 
-def test_short_markdown_body_is_redacted_from_all_emitted_artifacts(tmp_path: Path) -> None:
+def test_short_markdown_body_is_redacted_from_all_emitted_artifacts(
+    tmp_path: Path,
+) -> None:
     raw_body = b"Crown launch note: ember."
     config = make_fixture(tmp_path, markdown_body=raw_body)
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
@@ -809,32 +1059,60 @@ def test_runtime_capability_no_go_blocks_green_certification(tmp_path: Path) -> 
     result = subject.run_all(config)
 
     assert result["certification"]["terminal_state"] == "blocked_no_mutation"
-    assert any("lightrag_capability" in blocker for blocker in result["certification"]["blockers"])
-    assert all(row["apply_status"] == "blocked" for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl"))
-    assert all(row["status"] == "blocked" for row in read_jsonl(config.run_dir / "cag-pack-manifest.jsonl"))
-    assert all(row["status"] == "blocked" for row in read_jsonl(config.run_dir / "docling-normalized-output.jsonl"))
-    assert set(result["certification"]["rollout_gates"].values()) >= {"blocked_until_p0_green"}
+    assert any(
+        "lightrag_capability" in blocker
+        for blocker in result["certification"]["blockers"]
+    )
+    assert all(
+        row["apply_status"] == "blocked"
+        for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl")
+    )
+    assert all(
+        row["status"] == "blocked"
+        for row in read_jsonl(config.run_dir / "cag-pack-manifest.jsonl")
+    )
+    assert all(
+        row["status"] == "blocked"
+        for row in read_jsonl(config.run_dir / "docling-normalized-output.jsonl")
+    )
+    assert set(result["certification"]["rollout_gates"].values()) >= {
+        "blocked_until_p0_green"
+    }
 
 
-def test_cli_returns_zero_only_for_green_dry_run(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    green = make_fixture(tmp_path / "green")
-    green_rc = subject.main(subject.config_to_argv(green))
+def test_cli_returns_nonzero_for_legacy_v1_and_rights_blocked_runs(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    legacy = make_fixture(tmp_path / "legacy")
+    legacy_rc = subject.main(subject.config_to_argv(legacy))
     blocked = make_fixture(tmp_path / "blocked", eligible=False)
     blocked_rc = subject.main(subject.config_to_argv(blocked))
 
-    assert green_rc == 0
+    assert legacy_rc == 2
     assert blocked_rc == 2
     assert '"terminal_state": "blocked_no_mutation"' in capsys.readouterr().out
 
 
 def test_identical_rerun_is_byte_deterministic(tmp_path: Path) -> None:
     config = make_fixture(tmp_path)
-    other = replace(config, artifact_root=subject.p0p8.DEFAULT_PUBLIC_ROOT / "logs" / "other-artifacts")
+    other = replace(
+        config,
+        artifact_root=subject.p0p8.DEFAULT_PUBLIC_ROOT / "logs" / "other-artifacts",
+    )
 
     subject.run_all(config)
-    first = {path.name: path.read_bytes() for path in config.run_dir.iterdir() if path.is_file()}
+    first = {
+        path.name: path.read_bytes()
+        for path in config.run_dir.iterdir()
+        if path.is_file()
+    }
     subject.run_all(other)
-    second = {path.name: path.read_bytes() for path in other.run_dir.iterdir() if path.is_file()}
+    second = {
+        path.name: path.read_bytes()
+        for path in other.run_dir.iterdir()
+        if path.is_file()
+    }
 
     first_certification = json.loads(first.pop("black-label-certification.json"))
     second_certification = json.loads(second.pop("black-label-certification.json"))
@@ -855,7 +1133,9 @@ def test_run_id_must_be_one_safe_component(tmp_path: Path, run_id: str) -> None:
     assert not config.artifact_root.exists()
 
 
-def test_artifact_root_is_logs_bounded_and_cannot_overlap_source(tmp_path: Path) -> None:
+def test_artifact_root_is_logs_bounded_and_cannot_overlap_source(
+    tmp_path: Path,
+) -> None:
     config = make_fixture(tmp_path)
     outside = replace(config, artifact_root=tmp_path / "outside")
     overlap = replace(config, source_root=config.artifact_root)
@@ -869,12 +1149,20 @@ def test_artifact_root_is_logs_bounded_and_cannot_overlap_source(tmp_path: Path)
 def test_duplicate_run_id_preserves_first_published_run(tmp_path: Path) -> None:
     config = make_fixture(tmp_path)
     subject.run_all(config)
-    before = {path.name: sha256_bytes(path.read_bytes()) for path in config.run_dir.iterdir() if path.is_file()}
+    before = {
+        path.name: sha256_bytes(path.read_bytes())
+        for path in config.run_dir.iterdir()
+        if path.is_file()
+    }
 
     with pytest.raises(FileExistsError, match="run_id_already_exists"):
         subject.run_all(config)
 
-    after = {path.name: sha256_bytes(path.read_bytes()) for path in config.run_dir.iterdir() if path.is_file()}
+    after = {
+        path.name: sha256_bytes(path.read_bytes())
+        for path in config.run_dir.iterdir()
+        if path.is_file()
+    }
     assert after == before
     assert subject.build_run_id() != subject.build_run_id()
 
@@ -885,12 +1173,20 @@ def test_cli_duplicate_run_id_fails_closed_without_traceback(
 ) -> None:
     config = make_fixture(tmp_path)
     subject.run_all(config)
-    before = {path.name: sha256_bytes(path.read_bytes()) for path in config.run_dir.iterdir() if path.is_file()}
+    before = {
+        path.name: sha256_bytes(path.read_bytes())
+        for path in config.run_dir.iterdir()
+        if path.is_file()
+    }
 
     return_code = subject.main(subject.config_to_argv(config))
     output = capsys.readouterr().out
 
-    after = {path.name: sha256_bytes(path.read_bytes()) for path in config.run_dir.iterdir() if path.is_file()}
+    after = {
+        path.name: sha256_bytes(path.read_bytes())
+        for path in config.run_dir.iterdir()
+        if path.is_file()
+    }
     assert return_code == 2
     assert '"terminal_state": "blocked_no_mutation"' in output
     assert "run_id_already_exists" in output
@@ -899,10 +1195,14 @@ def test_cli_duplicate_run_id_fails_closed_without_traceback(
 
 
 @pytest.mark.parametrize("failure", ["missing", "hash_mismatch"])
-def test_rights_evidence_must_exist_and_match_exact_file_hash(tmp_path: Path, failure: str) -> None:
+def test_rights_evidence_must_exist_and_match_exact_file_hash(
+    tmp_path: Path, failure: str
+) -> None:
     config = make_fixture(tmp_path)
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
-    evidence_path = config.policy_manifest.parent / policy["sources"][0]["evidence_refs"][0]
+    evidence_path = (
+        config.policy_manifest.parent / policy["sources"][0]["evidence_refs"][0]
+    )
     if failure == "missing":
         evidence_path.unlink()
     else:
@@ -917,13 +1217,33 @@ def test_rights_evidence_must_exist_and_match_exact_file_hash(tmp_path: Path, fa
         for row in rights
         for blocker in row["blocking_reasons"]
     )
-    assert all(row["apply_status"] == "blocked" for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl"))
+    assert all(
+        row["apply_status"] == "blocked"
+        for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl")
+    )
+
+
+def test_declared_rights_blockers_override_an_eligible_source(tmp_path: Path) -> None:
+    config = make_fixture(tmp_path)
+    policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
+    policy["sources"][0]["blocking_reasons"] = ["manual_rights_hold"]
+    write_json(config.policy_manifest, policy)
+
+    result = subject.run_all(config)
+    rights = read_jsonl(config.run_dir / "governed-rights-registry.jsonl")
+    held = next(row for row in rights if row["relative_path"] == "01-notes/guide.md")
+
+    assert result["certification"]["terminal_state"] == "blocked_no_mutation"
+    assert held["apply_eligible"] is False
+    assert "declared_rights_blockers_present" in held["blocking_reasons"]
 
 
 def test_text_rights_do_not_require_visual_only_predicates(tmp_path: Path) -> None:
     config = make_fixture(tmp_path)
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
-    text_source = next(row for row in policy["sources"] if row["media_type"] == "text/markdown")
+    text_source = next(
+        row for row in policy["sources"] if row["media_type"] == "text/markdown"
+    )
     for predicate in subject.VISUAL_EVIDENCE_PREDICATES:
         text_source["evidence_predicates"][predicate] = False
     refresh_rights_evidence(config.policy_manifest.parent, text_source)
@@ -932,20 +1252,36 @@ def test_text_rights_do_not_require_visual_only_predicates(tmp_path: Path) -> No
     result = subject.run_all(config)
     rights = read_jsonl(config.run_dir / "governed-rights-registry.jsonl")
 
-    assert result["certification"]["terminal_state"] == "green_dry_run"
-    assert next(row for row in rights if row["source_id"] == text_source["source_id"])["apply_eligible"] is True
+    assert result["certification"]["terminal_state"] == "blocked_no_mutation"
+    assert (
+        "runtime_capabilities_v1_legacy_positive_proof_unsupported"
+        in result["certification"]["blockers"]
+    )
+    assert (
+        next(row for row in rights if row["source_id"] == text_source["source_id"])[
+            "apply_eligible"
+        ]
+        is True
+    )
 
 
-def test_verbatim_markdown_body_metadata_is_redacted_and_blocks_certification(tmp_path: Path) -> None:
+def test_verbatim_markdown_body_metadata_is_redacted_and_blocks_certification(
+    tmp_path: Path,
+) -> None:
     config = make_fixture(tmp_path)
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
-    raw_body = (config.source_root / "01-notes" / "guide.md").read_text(encoding="utf-8")
+    raw_body = (config.source_root / "01-notes" / "guide.md").read_text(
+        encoding="utf-8"
+    )
     policy["source_classes"][0]["description"] = raw_body
     write_json(config.policy_manifest, policy)
 
     result = subject.run_all(config)
     cards = read_jsonl(config.run_dir / "black-label-card-manifest.jsonl")
-    serialized = "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in config.run_dir.iterdir())
+    serialized = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in config.run_dir.iterdir()
+    )
 
     assert result["certification"]["terminal_state"] == "blocked_no_mutation"
     assert "raw_source_text_included" in result["certification"]["blockers"]
@@ -976,11 +1312,16 @@ def test_budget_must_be_current_and_bound_to_observed_inventory(
 
     assert result["certification"]["terminal_state"] == "blocked_no_mutation"
     assert expected_blocker in result["certification"]["blockers"]
-    assert all(row["apply_status"] == "blocked" for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl"))
+    assert all(
+        row["apply_status"] == "blocked"
+        for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl")
+    )
 
 
 @pytest.mark.parametrize("failure", ["stale", "unresolved_evidence"])
-def test_allowed_capabilities_require_fresh_resolved_observations(tmp_path: Path, failure: str) -> None:
+def test_allowed_capabilities_require_fresh_resolved_observations(
+    tmp_path: Path, failure: str
+) -> None:
     config = make_fixture(tmp_path)
     capabilities = json.loads(config.runtime_capabilities.read_text(encoding="utf-8"))
     if failure == "stale":
@@ -994,8 +1335,14 @@ def test_allowed_capabilities_require_fresh_resolved_observations(tmp_path: Path
     result = subject.run_all(config)
 
     assert result["certification"]["terminal_state"] == "blocked_no_mutation"
-    assert any("runtime_capabilit" in blocker for blocker in result["certification"]["blockers"])
-    assert all(row["status"] == "blocked" for row in read_jsonl(config.run_dir / "docling-normalized-output.jsonl"))
+    assert any(
+        "runtime_capabilit" in blocker
+        for blocker in result["certification"]["blockers"]
+    )
+    assert all(
+        row["status"] == "blocked"
+        for row in read_jsonl(config.run_dir / "docling-normalized-output.jsonl")
+    )
 
 
 @pytest.mark.parametrize(
@@ -1028,11 +1375,16 @@ def test_available_capabilities_require_unique_ids_and_capability_specific_proof
     result = subject.run_all(config)
 
     assert result["certification"]["terminal_state"] == "blocked_no_mutation"
-    assert any(blocker.startswith(expected_blocker) for blocker in result["certification"]["blockers"])
+    assert any(
+        blocker.startswith(expected_blocker)
+        for blocker in result["certification"]["blockers"]
+    )
 
 
 @pytest.mark.parametrize("failure", ["closed_gate", "unsupported_claim"])
-def test_frozen_green_value_contract_requires_measured_thresholds(tmp_path: Path, failure: str) -> None:
+def test_frozen_green_value_contract_requires_measured_thresholds(
+    tmp_path: Path, failure: str
+) -> None:
     config = make_fixture(tmp_path)
     policy = json.loads(config.policy_manifest.read_text(encoding="utf-8"))
     if failure == "closed_gate":
@@ -1044,7 +1396,10 @@ def test_frozen_green_value_contract_requires_measured_thresholds(tmp_path: Path
     result = subject.run_all(config)
 
     assert result["certification"]["terminal_state"] == "blocked_no_mutation"
-    assert all(row["apply_status"] == "blocked" for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl"))
+    assert all(
+        row["apply_status"] == "blocked"
+        for row in read_jsonl(config.run_dir / "lightrag-card-apply-plan.jsonl")
+    )
 
 
 @pytest.mark.parametrize(
@@ -1056,7 +1411,10 @@ def test_frozen_green_value_contract_requires_measured_thresholds(tmp_path: Path
         ("artifact_manifest_hash", "value_artifact_manifest_hash_mismatch"),
         ("artifact_hash", "value_artifact_hash_mismatch"),
         ("nan_metric", "value_contract_green_metric_invalid:irrelevant_hit_rate_at_5"),
-        ("infinite_metric", "value_contract_green_metric_invalid:irrelevant_hit_rate_at_5"),
+        (
+            "infinite_metric",
+            "value_contract_green_metric_invalid:irrelevant_hit_rate_at_5",
+        ),
     ],
 )
 def test_frozen_green_value_evidence_is_hash_bound_and_exact(
@@ -1083,10 +1441,14 @@ def test_frozen_green_value_evidence_is_hash_bound_and_exact(
         write_json(certificate_path, certificate)
         value["candidate_evidence_sha256"] = subject.sha256_file(certificate_path)
     elif failure == "artifact_manifest_hash":
-        manifest["artifacts"].append({"artifact_ref": "missing.json", "sha256": "a" * 64})
+        manifest["artifacts"].append(
+            {"artifact_ref": "missing.json", "sha256": "a" * 64}
+        )
         write_json(manifest_path, manifest)
     elif failure == "artifact_hash":
-        artifact_path = config.policy_manifest.parent / manifest["artifacts"][0]["artifact_ref"]
+        artifact_path = (
+            config.policy_manifest.parent / manifest["artifacts"][0]["artifact_ref"]
+        )
         artifact_path.write_text("tampered\n", encoding="utf-8")
     else:
         value["candidate"]["irrelevant_hit_rate_at_5"] = (
@@ -1118,11 +1480,24 @@ def test_checked_in_seedance_manifest_binds_exact_inventory() -> None:
     assert sum(row["media_type"] == "text/markdown" for row in sources) == 17
     assert sum(row["media_type"] == "image/png" for row in sources) == 4
     assert sum(row["size_bytes"] for row in sources) == 3_388_683
-    assert subject.inventory_audit_digest(sources) == "38ca2330651ce290da8d97b1d1cb8b2a11ce83161687013af32ac83ede6b40e3"
-    assert manifest["inventory_contract"]["audit_digest_sha256"] == subject.inventory_audit_digest(sources)
-    assert manifest["budget_contract"]["corpus_digest_sha256"] == subject.inventory_audit_digest(sources)
+    assert (
+        subject.inventory_audit_digest(sources)
+        == "38ca2330651ce290da8d97b1d1cb8b2a11ce83161687013af32ac83ede6b40e3"
+    )
+    assert manifest["inventory_contract"][
+        "audit_digest_sha256"
+    ] == subject.inventory_audit_digest(sources)
+    assert manifest["budget_contract"][
+        "corpus_digest_sha256"
+    ] == subject.inventory_audit_digest(sources)
     assert manifest["value_contract"]["candidate_evidence_ref"] is None
     assert manifest["value_contract"]["candidate_evidence_sha256"] is None
     assert subject._validate_value_contract(manifest["value_contract"]) == []
-    assert all(row["source_id"] == f"seedance-i2v:source:{row['source_sha256']}" for row in sources)
-    assert all(row["package_id"] == f"seedance-i2v:package:{row['source_sha256']}" for row in sources)
+    assert all(
+        row["source_id"] == f"seedance-i2v:source:{row['source_sha256']}"
+        for row in sources
+    )
+    assert all(
+        row["package_id"] == f"seedance-i2v:package:{row['source_sha256']}"
+        for row in sources
+    )
