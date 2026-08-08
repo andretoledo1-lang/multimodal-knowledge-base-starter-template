@@ -7,10 +7,13 @@ It does not call visual providers, Knowledge Hub, or LightRAG apply endpoints.
 from __future__ import annotations
 
 import argparse
+import codecs
+import hashlib
 import json
 import multiprocessing as mp
 import os
-import re
+import secrets
+import stat
 import tempfile
 import time
 from collections import Counter
@@ -35,6 +38,19 @@ LIGHTRAG_PLAN_SCHEMA_VERSION = "black_label_lightrag_apply_plan.v1"
 CAG_MANIFEST_SCHEMA_VERSION = "black_label_cag_pack_manifest.v1"
 EVAL_SCHEMA_VERSION = "black_label_eval_suite.v1"
 CERTIFICATION_SCHEMA_VERSION = "black_label_certification.v1"
+GOVERNED_ROLLOUT_SCHEMA_VERSION = "dantedash.governed_corpus_rollout.v1"
+GOVERNED_ROLLOUT_PROVENANCE = "governed_corpus_rollout_v1"
+LEGACY_ROLLOUT_PROVENANCE = "legacy_p0p8_v1"
+GOVERNED_P1_AUTHORIZATION_BLOCKER = "governed_p1_controller_not_authorized"
+GOVERNED_P1_PROVENANCE_BLOCKER = "governed_p1_provenance_not_recognized"
+LIGHTRAG_BINDING_MIGRATION_FILE = "lightrag-input-binding-migration.json"
+LEGACY_SOURCE_ATTESTATION_SCHEMA_VERSION = "black_label_legacy_source_attestation.v1"
+LEGACY_SOURCE_BUNDLE_BINDING_SCHEMA_VERSION = "black_label_source_bundle_binding.v1"
+LEGACY_BLACK_LABEL_GENERATION_RECIPE_SCHEMA_VERSION = "black_label_generation_recipe.v1"
+BLACK_LABEL_GENERATION_RECIPE_SCHEMA_VERSION = "black_label_generation_recipe.v2"
+LIGHTRAG_FENCE_SCHEMA_VERSION = "black_label_lightrag_mutation_fence.v1"
+LIGHTRAG_FENCE_RECEIPT_SCHEMA_VERSION = "black_label_lightrag_mutation_fence_receipt.v1"
+LIGHTRAG_STAGE_CLAIM_SCHEMA_VERSION = "black_label_lightrag_stage_claim.v1"
 
 DEFAULT_ARTIFACT_ROOT = Path("logs/black-label-docling")
 DEFAULT_SOURCE_ROOT = Path("logs/post-docling-p0-p8-harness")
@@ -77,7 +93,13 @@ TOPIC_KEYWORDS = {
     "visual-prompt-translation": ("ai", "prompt", "reference", "translation", "image"),
 }
 
-CommandName = Literal["run-all", "refresh-certification", "apply-lightrag-sample", "apply-lightrag-stage"]
+CommandName = Literal[
+    "run-all",
+    "refresh-certification",
+    "migrate-legacy-bindings",
+    "apply-lightrag-sample",
+    "apply-lightrag-stage",
+]
 LightRAGApplyStage = Literal[
     "one_document_sample",
     "five_document_sample",
@@ -154,6 +176,8 @@ class BlackLabelConfig:
     lightrag_stage: LightRAGApplyStage = "one_document_sample"
     lightrag_batch_max_cards: int = DEFAULT_LIGHTRAG_BATCH_MAX_CARDS
     lightrag_batch_max_chars: int = DEFAULT_LIGHTRAG_BATCH_MAX_CHARS
+    legacy_source_certification_hash: str = ""
+    legacy_source_bundle_hash: str = ""
 
     @property
     def run_dir(self) -> Path:
@@ -167,6 +191,8 @@ class SourceBundle:
     normalized: list[dict[str, Any]]
     crosswalk: list[dict[str, Any]]
     cag_candidates: list[dict[str, Any]]
+    text_artifacts: dict[str, dict[str, Any]]
+    binding: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -181,14 +207,26 @@ class PhaseResult:
 
 
 def build_run_id() -> str:
-    return f"docling-black-label-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
+    timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return f"docling-black-label-{timestamp}-{secrets.token_hex(8)}"
 
 
 def run_all(config: BlackLabelConfig) -> dict[str, Any]:
     if config.apply:
         raise ValueError("apply_mode_not_implemented_for_black_label_docling")
-    config.run_dir.mkdir(parents=True, exist_ok=True)
+    generation_blocker = _generation_config_blocker(config)
+    if generation_blocker:
+        raise ValueError(generation_blocker)
+    try:
+        config.run_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise FileExistsError(f"black_label_run_already_exists:{_public_path(config.run_dir)}") from exc
     source = load_source_bundle(config)
+    return _run_all_from_source(config, source)
+
+
+def _run_all_from_source(config: BlackLabelConfig, source: SourceBundle) -> dict[str, Any]:
+    """Build one run from an immutable in-memory source snapshot."""
     phases: list[PhaseResult] = []
 
     registry, phase = build_asset_registry(config, source)
@@ -241,22 +279,80 @@ def apply_lightrag_stage(config: BlackLabelConfig, *, client: Any | None = None)
     """Apply a staged set of curated LightRAG cards and verify query recovery."""
     stage = _normalize_lightrag_stage(config.lightrag_stage)
     run_dir = _resolve_black_label_run(config)
+    stage_ledger_path = run_dir / LIGHTRAG_STAGE_LEDGER_FILES[stage]
+    stage_claim_path = run_dir / f".{LIGHTRAG_STAGE_LEDGER_FILES[stage]}.claim"
+    stage_claim_acquired = False
+    persist_stage_ledger = True
+    replay_blocker = _lightrag_stage_replay_blocker(stage_ledger_path, stage)
+    if replay_blocker:
+        return _lightrag_stage_ledger(
+            config,
+            run_dir,
+            stage=stage,
+            candidates=[],
+            batches=[],
+            blockers=[replay_blocker],
+        )
     try:
-        prereq_blockers = _lightrag_stage_prerequisite_blockers(run_dir, stage)
         plan_rows = list(_read_jsonl(run_dir / "lightrag-card-apply-plan.jsonl"))
         cards = list(_read_jsonl(run_dir / "black-label-card-manifest.jsonl"))
+        (
+            input_bindings,
+            input_binding_blockers,
+            black_label_certification_hash,
+        ) = _current_lightrag_input_bindings(
+            config,
+            run_dir,
+            cards=cards,
+            lightrag_plan=plan_rows,
+        )
+    except Exception as exc:  # noqa: BLE001
+        ledger = _lightrag_stage_ledger(config, run_dir, stage=stage, candidates=[], batches=[])
+        ledger["blockers"] = [f"{exc.__class__.__name__}:{public_error(exc)[:180]}"]
+        _write_json(stage_ledger_path, _public_payload(ledger))
+        return ledger
+    try:
+        prereq_blockers = _lightrag_stage_prerequisite_blockers(
+            config,
+            run_dir,
+            stage,
+            input_bindings=input_bindings,
+            input_binding_blockers=input_binding_blockers,
+        )
         card_by_id = _first_by(cards, "card_id")
+        prior_card_ids = _lightrag_prior_stage_card_ids(run_dir, stage)
+        prior_source_keys = _lightrag_prior_stage_source_keys(run_dir, stage)
         candidates = _select_lightrag_stage_candidates(
             stage,
             plan_rows,
             card_by_id,
-            exclude_card_ids=_lightrag_prior_stage_card_ids(run_dir, stage),
+            exclude_card_ids=prior_card_ids,
+            prior_source_keys=prior_source_keys,
         )
         batches = _lightrag_stage_batches(candidates, config)
-        ledger = _lightrag_stage_ledger(config, run_dir, stage=stage, candidates=candidates, batches=batches)
+        ledger = _lightrag_stage_ledger(
+            config,
+            run_dir,
+            stage=stage,
+            candidates=candidates,
+            batches=batches,
+            input_bindings=input_bindings,
+        )
         if prereq_blockers:
             ledger["blockers"] = prereq_blockers
             return ledger
+        if stage == "five_document_sample":
+            expected_new_sources = max(0, int(LIGHTRAG_STAGE_LIMITS[stage] or 5) - len(prior_source_keys))
+            selected_source_keys = {_lightrag_candidate_source_key(candidate) for candidate in candidates}
+            cumulative_source_keys = prior_source_keys | selected_source_keys
+            if len(candidates) != expected_new_sources or len(cumulative_source_keys) != int(
+                LIGHTRAG_STAGE_LIMITS[stage] or 5
+            ):
+                ledger["blockers"] = [
+                    f"five_document_cumulative_source_count_mismatch:"
+                    f"{len(cumulative_source_keys)}!=5"
+                ]
+                return ledger
         if not candidates:
             ledger["blockers"] = [f"no_{stage}_candidate"]
             return ledger
@@ -267,6 +363,25 @@ def apply_lightrag_stage(config: BlackLabelConfig, *, client: Any | None = None)
         own_client = client is None
         lightrag = client or LightRAGClient(base_url=config.lightrag_base_url, timeout_s=config.lightrag_timeout_s)
         try:
+            fencing_blocker = _lightrag_fencing_capability_blocker(lightrag)
+            if fencing_blocker:
+                ledger["blockers"] = [fencing_blocker]
+                return ledger
+            claim_payload = _lightrag_stage_claim_payload(
+                run_dir,
+                stage,
+                input_bindings,
+                black_label_certification_hash,
+                candidates,
+                batches,
+            )
+            try:
+                _write_exclusive_json(stage_claim_path, claim_payload)
+            except FileExistsError:
+                persist_stage_ledger = False
+                ledger["blockers"] = [f"existing_stage_claim_blocks_apply:{stage}"]
+                return ledger
+            stage_claim_acquired = True
             preflight = _lightrag_preflight(lightrag)
             ledger["preflight"] = preflight
             blockers = list(preflight.get("blockers") or [])
@@ -296,17 +411,43 @@ def apply_lightrag_stage(config: BlackLabelConfig, *, client: Any | None = None)
                     batch_candidates.append(candidate)
                 if not batch_candidates:
                     continue
-                insert_response = lightrag.insert_texts(
+                fence_request = _lightrag_fence_request(
+                    run_dir,
+                    stage,
+                    input_bindings,
+                    black_label_certification_hash,
+                    batch,
+                    batch_candidates,
+                    timeout_s=config.lightrag_poll_timeout_s,
+                )
+                ledger["mutation_attempted"] = True
+                ledger["mutation_state"] = "dispatching"
+                ledger["pending_fence"] = {
+                    "batch_id": batch.get("batch_id"),
+                    "fence_token": fence_request.get("fence_token"),
+                    "binding_hash": fence_request.get("binding_hash"),
+                }
+                _write_json(stage_ledger_path, _public_payload(ledger))
+                insert_response = lightrag.insert_texts_once(
                     [str(candidate["payload"]) for candidate in batch_candidates],
                     [str(candidate["file_source"]) for candidate in batch_candidates],
+                    fence_request=fence_request,
                 )
                 safe_response = _public_payload(insert_response)
                 safe_response["batch_id"] = batch.get("batch_id")
                 ledger.setdefault("insert_responses", []).append(safe_response)
                 if str(insert_response.get("status", "")).lower() == "failure":
+                    ledger["mutation_state"] = "rejected_or_uncertain"
                     ledger["blockers"] = [f"lightrag_insert_failure:{batch.get('batch_id')}"]
                     return ledger
+                ledger["mutation_performed"] = True
+                ledger["mutation_state"] = "receipt_pending"
+                if not _lightrag_fence_receipt_valid(insert_response, fence_request):
+                    ledger["blockers"] = [f"lightrag_fence_receipt_invalid:{batch.get('batch_id')}"]
+                    return ledger
                 sent_count += len(batch_candidates)
+                ledger["mutation_state"] = "confirmed"
+                ledger.pop("pending_fence", None)
                 inserted_candidates.extend(batch_candidates)
                 ledger["sent_count"] = sent_count
                 ledger["mutation_performed"] = sent_count > 0
@@ -365,13 +506,220 @@ def apply_lightrag_stage(config: BlackLabelConfig, *, client: Any | None = None)
                 if callable(close):
                     close()
     except Exception as exc:  # noqa: BLE001
-        ledger = locals().get("ledger") or _lightrag_stage_ledger(config, run_dir, stage=stage, candidates=[], batches=[])
+        ledger = locals().get("ledger") or _lightrag_stage_ledger(
+            config,
+            run_dir,
+            stage=stage,
+            candidates=[],
+            batches=[],
+            input_bindings=input_bindings,
+        )
+        if ledger.get("mutation_attempted") and not ledger.get("mutation_performed"):
+            ledger["mutation_state"] = "uncertain"
         ledger["blockers"] = [f"{exc.__class__.__name__}:{public_error(exc)[:180]}"]
         return ledger
     finally:
         ledger.setdefault("insert_responses", [])
         ledger.setdefault("insert_response", ledger["insert_responses"][0] if ledger["insert_responses"] else None)
-        _write_json(run_dir / LIGHTRAG_STAGE_LEDGER_FILES[stage], _public_payload(ledger))
+        if (
+            stage_claim_acquired
+            and not ledger.get("mutation_performed")
+            and not ledger.get("mutation_attempted")
+        ):
+            stage_claim_path.unlink(missing_ok=True)
+        if persist_stage_ledger:
+            _write_json(run_dir / LIGHTRAG_STAGE_LEDGER_FILES[stage], _public_payload(ledger))
+
+
+def _source_certification_contract_blockers(certification: Mapping[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    if certification.get("schema_version") != p0p8.CERTIFICATION_SCHEMA_VERSION:
+        blockers.append("source_p0_p8_certification_schema_invalid")
+    if certification.get("ok") is not True:
+        blockers.append("black_label_source_not_certified")
+    if certification.get("dry_run") is not True:
+        blockers.append("source_p0_p8_certification_not_dry_run")
+    if certification.get("mutation_performed") is not False:
+        blockers.append("black_label_source_mutated")
+    recorded_blockers = certification.get("blockers")
+    if not isinstance(recorded_blockers, list) or recorded_blockers:
+        blockers.append("source_p0_p8_certification_has_blockers")
+    return blockers
+
+
+def _read_json_snapshot(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_bytes())
+    if not isinstance(payload, dict):
+        raise ValueError(f"source_bundle_json_not_object:{path.name}")
+    return payload
+
+
+def _read_jsonl_snapshot(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for index, line in enumerate(path.read_bytes().splitlines(), 1):
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if not isinstance(row, dict):
+            raise ValueError(f"source_bundle_jsonl_row_not_object:{path.name}:{index}")
+        rows.append(row)
+    return rows
+
+
+def _validate_source_bundle_rows(
+    certification: Mapping[str, Any],
+    normalized: Sequence[Mapping[str, Any]],
+    crosswalk: Sequence[Mapping[str, Any]],
+    cag_candidates: Sequence[Mapping[str, Any]],
+) -> None:
+    counts = certification.get("counts")
+    if not isinstance(counts, Mapping):
+        raise ValueError("source_p0_p8_certification_counts_invalid")
+    expected_counts = {
+        "normalized_records": len(normalized),
+        "crosswalk_rows": len(crosswalk),
+        "cag_candidates": len(cag_candidates),
+    }
+    for key, expected in expected_counts.items():
+        if _safe_int(counts.get(key)) != expected:
+            raise ValueError(f"source_bundle_count_mismatch:{key}")
+    schema_contracts = (
+        (normalized, p0p8.NORMALIZED_SCHEMA_VERSION, "normalized"),
+        (crosswalk, p0p8.CROSSWALK_SCHEMA_VERSION, "crosswalk"),
+        (cag_candidates, p0p8.CAG_SCHEMA_VERSION, "cag"),
+    )
+    for rows, expected_schema, label in schema_contracts:
+        if any(row.get("schema_version") != expected_schema for row in rows):
+            raise ValueError(f"source_bundle_schema_mismatch:{label}")
+
+
+def _snapshot_text_artifacts(
+    normalized: Sequence[Mapping[str, Any]],
+    *,
+    text_read_chars: int,
+) -> dict[str, dict[str, Any]]:
+    snapshots: dict[str, dict[str, Any]] = {}
+    for row in normalized:
+        file_kind = str(row.get("output_file_kind") or "")
+        artifact_layer = str(row.get("artifact_layer") or "")
+        if file_kind not in TEXT_FILE_KINDS and artifact_layer != "docling_output_file":
+            continue
+        package_key = str(row.get("package_key") or "")
+        if not package_key or package_key in snapshots:
+            raise ValueError("source_text_artifact_package_key_invalid")
+        path_text = str(row.get("output_relative_path") or "")
+        declared_hash = str(row.get("artifact_sha256") or "")
+        path = _repo_path(path_text)
+        snapshot: dict[str, Any] = {
+            "package_key": package_key,
+            "status": "unavailable",
+            "artifact_sha256": "",
+            "declared_artifact_sha256": declared_hash,
+            "byte_count": 0,
+            "sample": "",
+            "sample_chars": 0,
+            "truncated": False,
+        }
+        if path_text and path.is_file():
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            try:
+                with os.fdopen(descriptor, "rb") as handle:
+                    before_stat = os.fstat(handle.fileno())
+                    if not stat.S_ISREG(before_stat.st_mode):
+                        raise ValueError("source_text_artifact_not_regular_file")
+                    digest = hashlib.sha256()
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    sample_parts: list[str] = []
+                    sample_chars_remaining = text_read_chars + 1
+                    observed_bytes = 0
+                    while chunk := handle.read(1024 * 1024):
+                        observed_bytes += len(chunk)
+                        digest.update(chunk)
+                        if sample_chars_remaining > 0:
+                            decoded = decoder.decode(chunk, final=False)
+                            sample_parts.append(decoded[:sample_chars_remaining])
+                            sample_chars_remaining -= len(sample_parts[-1])
+                    if sample_chars_remaining > 0:
+                        final_text = decoder.decode(b"", final=True)
+                        sample_parts.append(final_text[:sample_chars_remaining])
+                    after_stat = os.fstat(handle.fileno())
+            except Exception:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+                raise
+            if (
+                (before_stat.st_dev, before_stat.st_ino, before_stat.st_size, before_stat.st_mtime_ns)
+                != (after_stat.st_dev, after_stat.st_ino, after_stat.st_size, after_stat.st_mtime_ns)
+                or observed_bytes != after_stat.st_size
+            ):
+                raise ValueError("source_text_artifact_changed_during_snapshot")
+            try:
+                current_stat = path.stat(follow_symlinks=False)
+            except (FileNotFoundError, OSError) as exc:
+                raise ValueError("source_text_artifact_path_changed_during_snapshot") from exc
+            if stat.S_ISLNK(current_stat.st_mode) or (
+                current_stat.st_dev,
+                current_stat.st_ino,
+            ) != (
+                after_stat.st_dev,
+                after_stat.st_ino,
+            ):
+                raise ValueError("source_text_artifact_path_changed_during_snapshot")
+            artifact_hash = digest.hexdigest()
+            if declared_hash and not secrets.compare_digest(declared_hash, artifact_hash):
+                raise ValueError("source_text_artifact_hash_mismatch")
+            sample = "".join(sample_parts)
+            bounded_sample = sample[:text_read_chars]
+            snapshot.update(
+                {
+                    "status": "available",
+                    "artifact_sha256": artifact_hash,
+                    "byte_count": observed_bytes,
+                    "sample": bounded_sample,
+                    "sample_chars": len(bounded_sample),
+                    "truncated": len(sample) > text_read_chars or observed_bytes > len(bounded_sample),
+                }
+            )
+        snapshots[package_key] = snapshot
+    return snapshots
+
+
+def _source_bundle_binding(
+    certification: Mapping[str, Any],
+    normalized: Sequence[Mapping[str, Any]],
+    crosswalk: Sequence[Mapping[str, Any]],
+    cag_candidates: Sequence[Mapping[str, Any]],
+    text_artifacts: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    text_bindings = [
+        {
+            key: value
+            for key, value in text_artifacts[package_key].items()
+            if key not in {"sample", "sample_chars", "truncated"}
+        }
+        for package_key in sorted(text_artifacts)
+    ]
+    binding = {
+        "schema_version": LEGACY_SOURCE_BUNDLE_BINDING_SCHEMA_VERSION,
+        "component_hashes": {
+            "p0_p8_certification": stable_hash(certification),
+            "docling_normalized_output": stable_hash(list(normalized)),
+            "package_crosswalk": stable_hash(list(crosswalk)),
+            "cag_pack_candidates": stable_hash(list(cag_candidates)),
+            "text_artifacts": stable_hash(text_bindings),
+        },
+        "component_counts": {
+            "normalized_records": len(normalized),
+            "crosswalk_rows": len(crosswalk),
+            "cag_candidates": len(cag_candidates),
+            "text_artifacts": len(text_bindings),
+        },
+    }
+    binding["source_bundle_hash"] = stable_hash(binding)
+    return binding
 
 
 def load_source_bundle(config: BlackLabelConfig) -> SourceBundle:
@@ -384,30 +732,44 @@ def load_source_bundle(config: BlackLabelConfig) -> SourceBundle:
     if missing:
         raise FileNotFoundError(f"black_label_source_missing:{','.join(missing)}")
 
-    certification = json.loads(certification_path.read_text(encoding="utf-8"))
-    if certification.get("ok") is not True:
-        raise ValueError("black_label_source_not_certified")
-    if certification.get("mutation_performed"):
-        raise ValueError("black_label_source_mutated")
-    normalized = list(_read_jsonl(normalized_path))
-    crosswalk = list(_read_jsonl(crosswalk_path))
-    cag_candidates = list(_read_jsonl(cag_path))
+    certification = _read_json_snapshot(certification_path)
+    contract_blockers = _source_certification_contract_blockers(certification)
+    if contract_blockers:
+        raise ValueError(contract_blockers[0])
+    normalized = _read_jsonl_snapshot(normalized_path)
+    crosswalk = _read_jsonl_snapshot(crosswalk_path)
+    cag_candidates = _read_jsonl_snapshot(cag_path)
+    _validate_source_bundle_rows(certification, normalized, crosswalk, cag_candidates)
+    text_artifacts = _snapshot_text_artifacts(normalized, text_read_chars=config.text_read_chars)
+    binding = _source_bundle_binding(certification, normalized, crosswalk, cag_candidates, text_artifacts)
     return SourceBundle(
         run_dir=run_dir,
         certification=certification,
         normalized=normalized,
         crosswalk=crosswalk,
         cag_candidates=cag_candidates,
+        text_artifacts=text_artifacts,
+        binding=binding,
     )
 
 
 def refresh_black_label_certification(config: BlackLabelConfig) -> dict[str, Any]:
     run_dir = _resolve_black_label_run(config)
     existing_certification = json.loads((run_dir / "black-label-certification.json").read_text(encoding="utf-8"))
+    generation_config, recipe_blockers = _config_with_generation_recipe(config, existing_certification)
+    if recipe_blockers:
+        raise ValueError(recipe_blockers[0])
     source_run = config.source_run or existing_certification.get("source_run")
     if not source_run:
         raise ValueError("black_label_source_run_missing_for_refresh")
-    source = load_source_bundle(replace(config, source_run=Path(str(source_run))))
+    explicit_source_path = _source_certification_file(config.source_run)
+    certified_source_path = _source_certification_file(existing_certification.get("source_run"))
+    if config.source_run is not None and explicit_source_path is None:
+        raise ValueError("explicit_source_run_unavailable")
+    if explicit_source_path is not None and certified_source_path is not None:
+        if explicit_source_path.resolve() != certified_source_path.resolve():
+            raise ValueError("explicit_source_run_mismatch")
+    source = load_source_bundle(replace(generation_config, source_run=Path(str(source_run))))
     registry = list(_read_jsonl(run_dir / "black-label-asset-registry.jsonl"))
     visual_queue = list(_read_jsonl(run_dir / "visual-enrichment-queue.jsonl"))
     cards = list(_read_jsonl(run_dir / "black-label-card-manifest.jsonl"))
@@ -429,7 +791,30 @@ def refresh_black_label_certification(config: BlackLabelConfig) -> dict[str, Any
         for row in phase_ledger.get("phases", [])
         if isinstance(row, Mapping)
     ]
-    refresh_config = replace(config, run_id=str(existing_certification.get("run_id") or config.run_id), artifact_root=run_dir.parent)
+    current_bindings = _lightrag_input_bindings(
+        stable_hash(source.certification),
+        str(source.binding.get("source_bundle_hash") or ""),
+        cards,
+        lightrag_plan,
+    )
+    canonical_bindings = _regenerated_lightrag_input_bindings(generation_config, source, run_dir)
+    for key, expected in canonical_bindings.items():
+        if current_bindings.get(key) != expected:
+            raise ValueError(f"black_label_source_canonical_mismatch:{key}")
+    binding_migration: dict[str, Any] | None = None
+    if existing_certification.get("certified_input_bindings") != current_bindings:
+        migration, migration_blockers = _validated_binding_migration(run_dir, current_bindings)
+        if existing_certification.get("certified_input_bindings") is not None or migration is None:
+            detail = migration_blockers[0] if migration_blockers else "certified_input_bindings_mismatch"
+            raise ValueError(detail)
+        binding_migration = migration
+    elif (run_dir / LIGHTRAG_BINDING_MIGRATION_FILE).exists():
+        migration, migration_blockers = _validated_binding_migration(run_dir, current_bindings)
+        if migration is None:
+            detail = migration_blockers[0] if migration_blockers else "legacy_binding_migration_invalid"
+            raise ValueError(detail)
+        binding_migration = migration
+    refresh_config = replace(generation_config, run_id=run_dir.name, artifact_root=run_dir.parent)
     certification, _phase = certify_run(
         refresh_config,
         source,
@@ -442,8 +827,516 @@ def refresh_black_label_certification(config: BlackLabelConfig) -> dict[str, Any
         cag_manifest,
         eval_suite,
     )
+    if binding_migration is not None:
+        certification["legacy_binding_migration"] = {
+            "migration_id": binding_migration.get("migration_id"),
+            "sidecar": LIGHTRAG_BINDING_MIGRATION_FILE,
+            "sidecar_sha256": p0p8.sha256_file(run_dir / LIGHTRAG_BINDING_MIGRATION_FILE),
+        }
+        _write_json(run_dir / "black-label-certification.json", _public_payload(certification))
     _write_report(refresh_config, certification)
     return {"certification": certification, "run_dir": _public_path(run_dir)}
+
+
+def migrate_legacy_lightrag_bindings(config: BlackLabelConfig, *, client: Any | None = None) -> dict[str, Any]:
+    """Safely bind a pre-binding certified run without replaying prior writes."""
+    run_dir = _resolve_black_label_run(config)
+    certification = _load_black_label_certification(run_dir, require_green=False)
+    source_run = config.source_run or certification.get("source_run")
+    if not source_run:
+        return _legacy_binding_migration_result(run_dir, blockers=["black_label_source_run_missing_for_migration"])
+    certified_source_run = str(certification.get("source_run") or "")
+    if config.source_run and certified_source_run and not certified_source_run.startswith("<redacted:"):
+        if _repo_path(config.source_run) != _repo_path(certified_source_run):
+            return _legacy_binding_migration_result(run_dir, blockers=["legacy_binding_source_run_mismatch"])
+    generation_config, recipe_blockers = _config_with_generation_recipe(config, certification)
+    if recipe_blockers:
+        return _legacy_binding_migration_result(run_dir, blockers=recipe_blockers)
+    try:
+        source = load_source_bundle(replace(generation_config, source_run=Path(str(source_run))))
+        cards = list(_read_jsonl(run_dir / "black-label-card-manifest.jsonl"))
+        lightrag_plan = list(_read_jsonl(run_dir / "lightrag-card-apply-plan.jsonl"))
+    except Exception as exc:  # noqa: BLE001
+        return _legacy_binding_migration_result(
+            run_dir,
+            blockers=[f"legacy_binding_migration_input_error:{exc.__class__.__name__}"],
+        )
+
+    bindings = _lightrag_input_bindings(
+        stable_hash(source.certification),
+        str(source.binding.get("source_bundle_hash") or ""),
+        cards,
+        lightrag_plan,
+    )
+    blockers: list[str] = []
+    if certification.get("schema_version") != CERTIFICATION_SCHEMA_VERSION:
+        blockers.append("black_label_certification_schema_invalid")
+    if certification.get("ok") is not True or list(certification.get("blockers") or []):
+        blockers.append("black_label_certification_not_green")
+    if certification.get("dry_run") is not True or certification.get("mutation_performed") is not False:
+        blockers.append("black_label_certification_not_safe_for_migration")
+    recorded_source_hash = certification.get("source_p0_p8_certification_hash")
+    if recorded_source_hash is not None and recorded_source_hash != bindings["source_p0_p8_certification_hash"]:
+        blockers.append("source_p0_p8_certification_hash_mismatch")
+    (
+        source_rollout_schema,
+        source_rollout_provenance,
+        source_authorization,
+        source_legacy_attestation,
+    ) = _source_rollout_authorization(
+        source.certification,
+        source_bundle_binding=source.binding,
+        legacy_source_certification_hash=config.legacy_source_certification_hash,
+        legacy_source_bundle_hash=config.legacy_source_bundle_hash,
+    )
+    blockers.extend(_governed_p1_blockers(source_authorization))
+    source_fields = {
+        "source_rollout_schema_version": source_rollout_schema,
+        "source_rollout_provenance": source_rollout_provenance,
+        "source_governed_p1_authorization": source_authorization,
+        "source_legacy_attestation": source_legacy_attestation,
+        "source_bundle_binding": source.binding,
+    }
+    for key, expected in source_fields.items():
+        if key in certification and certification.get(key) != expected:
+            blockers.append(f"legacy_binding_source_authorization_mismatch:{key}")
+    if any(key in certification for key in ("rollout_schema_version", "rollout_provenance", "governed_p1_authorization")):
+        blockers.append("legacy_binding_direct_authorization_not_allowed")
+    recorded_bindings = certification.get("certified_input_bindings")
+    if "certified_input_bindings" in certification:
+        if recorded_bindings == bindings:
+            blockers.append("legacy_binding_migration_not_required")
+        else:
+            blockers.append("certified_input_bindings_mismatch")
+    if blockers:
+        return _legacy_binding_migration_result(run_dir, blockers=blockers, bindings=bindings)
+
+    try:
+        canonical_bindings = _regenerated_lightrag_input_bindings(generation_config, source, run_dir)
+    except Exception as exc:  # noqa: BLE001
+        return _legacy_binding_migration_result(
+            run_dir,
+            blockers=[f"legacy_binding_canonical_regeneration_error:{exc.__class__.__name__}"],
+            bindings=bindings,
+        )
+    for key, expected in canonical_bindings.items():
+        if bindings.get(key) != expected:
+            blockers.append(f"legacy_binding_canonical_mismatch:{key}")
+    if blockers:
+        return _legacy_binding_migration_result(run_dir, blockers=blockers, bindings=bindings)
+
+    existing_migration, migration_blockers = _validated_binding_migration(run_dir, bindings)
+    if existing_migration is not None:
+        return _legacy_binding_migration_result(
+            run_dir,
+            ok=True,
+            bindings=bindings,
+            migrated_stages=[str(row.get("stage") or "") for row in existing_migration.get("migrated_stage_ledgers", [])],
+        )
+    if (run_dir / LIGHTRAG_BINDING_MIGRATION_FILE).exists():
+        return _legacy_binding_migration_result(run_dir, blockers=migration_blockers, bindings=bindings)
+
+    try:
+        stage_records, ledger_blockers = _verified_legacy_stage_ledger_records(
+            generation_config,
+            run_dir,
+            cards,
+            lightrag_plan,
+            client=client,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _legacy_binding_migration_result(
+            run_dir,
+            blockers=[f"legacy_binding_live_recovery_error:{exc.__class__.__name__}"],
+            bindings=bindings,
+        )
+    if ledger_blockers:
+        return _legacy_binding_migration_result(run_dir, blockers=ledger_blockers, bindings=bindings)
+    migrated_stages = [str(record.get("stage") or "") for record in stage_records]
+
+    migration_record = {
+        "schema_version": "black_label_legacy_binding_migration.v1",
+        "mode": "canonical_regeneration_and_live_read_only_recovery",
+        "migrated_stages": migrated_stages,
+        "migrated_stage_ledgers": stage_records,
+        "mutation_replayed": False,
+        "legacy_certification_sha256": p0p8.sha256_file(run_dir / "black-label-certification.json"),
+        "certified_input_bindings": bindings,
+        "source_legacy_attestation": source_legacy_attestation,
+        "source_bundle_binding": source.binding,
+    }
+    migration_record["migration_id"] = stable_hash(migration_record)
+    try:
+        _write_json(run_dir / LIGHTRAG_BINDING_MIGRATION_FILE, _public_payload(migration_record))
+    except OSError as exc:
+        return _legacy_binding_migration_result(
+            run_dir,
+            blockers=[f"legacy_binding_sidecar_write_error:{exc.__class__.__name__}"],
+            bindings=bindings,
+        )
+    return _legacy_binding_migration_result(
+        run_dir,
+        ok=True,
+        bindings=bindings,
+        migrated_stages=migrated_stages,
+    )
+
+
+def _legacy_binding_migration_result(
+    run_dir: Path,
+    *,
+    ok: bool = False,
+    blockers: Sequence[str] = (),
+    bindings: Mapping[str, str] | None = None,
+    migrated_stages: Sequence[str] = (),
+) -> dict[str, Any]:
+    return {
+        "ok": ok,
+        "run_dir": _public_path(run_dir),
+        "blockers": list(blockers),
+        "certified_input_bindings": dict(bindings or {}),
+        "migrated_stages": list(migrated_stages),
+        "mutation_performed": False,
+        "mutation_attempted": False,
+        "mutation_state": "not_attempted",
+    }
+
+
+def _validated_binding_migration(
+    run_dir: Path,
+    current_bindings: Mapping[str, str],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    path = run_dir / LIGHTRAG_BINDING_MIGRATION_FILE
+    if not path.exists():
+        return None, ["legacy_binding_migration_missing"]
+    try:
+        migration = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None, ["legacy_binding_migration_unreadable"]
+    if not isinstance(migration, dict) or migration.get("schema_version") != "black_label_legacy_binding_migration.v1":
+        return None, ["legacy_binding_migration_schema_invalid"]
+    if migration.get("mutation_replayed") is not False:
+        return None, ["legacy_binding_migration_replay_state_invalid"]
+    expected_migration_id = stable_hash({key: value for key, value in migration.items() if key != "migration_id"})
+    if migration.get("migration_id") != expected_migration_id:
+        return None, ["legacy_binding_migration_id_mismatch"]
+    if migration.get("certified_input_bindings") != dict(current_bindings):
+        return None, ["legacy_binding_migration_input_bindings_mismatch"]
+    source_bundle_binding = migration.get("source_bundle_binding")
+    if not isinstance(source_bundle_binding, Mapping):
+        return None, ["legacy_source_bundle_binding_invalid"]
+    expected_bundle_hash = stable_hash(
+        {key: value for key, value in source_bundle_binding.items() if key != "source_bundle_hash"}
+    )
+    if (
+        source_bundle_binding.get("schema_version") != LEGACY_SOURCE_BUNDLE_BINDING_SCHEMA_VERSION
+        or source_bundle_binding.get("source_bundle_hash") != expected_bundle_hash
+        or source_bundle_binding.get("source_bundle_hash") != current_bindings.get("source_bundle_hash")
+    ):
+        return None, ["legacy_source_bundle_binding_invalid"]
+    source_attestation = migration.get("source_legacy_attestation")
+    if source_attestation is not None:
+        if not isinstance(source_attestation, Mapping):
+            return None, ["legacy_source_attestation_invalid"]
+        expected_attestation_id = stable_hash(
+            {key: value for key, value in source_attestation.items() if key != "attestation_id"}
+        )
+        if (
+            source_attestation.get("schema_version") != LEGACY_SOURCE_ATTESTATION_SCHEMA_VERSION
+            or source_attestation.get("source_p0_p8_certification_hash")
+            != current_bindings.get("source_p0_p8_certification_hash")
+            or source_attestation.get("source_bundle_hash") != current_bindings.get("source_bundle_hash")
+            or source_attestation.get("rollout_provenance") != LEGACY_ROLLOUT_PROVENANCE
+            or source_attestation.get("operator_explicit") is not True
+            or source_attestation.get("attestation_id") != expected_attestation_id
+        ):
+            return None, ["legacy_source_attestation_invalid"]
+
+    certification_path = run_dir / "black-label-certification.json"
+    try:
+        certification = json.loads(certification_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None, ["black_label_certification_unreadable"]
+    native_bindings = certification.get("certified_input_bindings")
+    if native_bindings is None:
+        if migration.get("legacy_certification_sha256") != p0p8.sha256_file(certification_path):
+            return None, ["legacy_binding_migration_certification_hash_mismatch"]
+    elif native_bindings != dict(current_bindings):
+        return None, ["certified_input_bindings_mismatch"]
+    else:
+        anchor = certification.get("legacy_binding_migration")
+        if not isinstance(anchor, Mapping):
+            return None, ["legacy_binding_migration_certification_anchor_missing"]
+        if (
+            anchor.get("migration_id") != migration.get("migration_id")
+            or anchor.get("sidecar") != LIGHTRAG_BINDING_MIGRATION_FILE
+            or anchor.get("sidecar_sha256") != p0p8.sha256_file(path)
+        ):
+            return None, ["legacy_binding_migration_certification_anchor_mismatch"]
+
+    stage_rows = migration.get("migrated_stage_ledgers")
+    if not isinstance(stage_rows, list):
+        return None, ["legacy_binding_migration_stage_records_invalid"]
+    seen_stages: set[str] = set()
+    for row in stage_rows:
+        if not isinstance(row, Mapping):
+            return None, ["legacy_binding_migration_stage_records_invalid"]
+        stage = str(row.get("stage") or "")
+        if stage not in LIGHTRAG_STAGE_LEDGER_FILES or stage in seen_stages:
+            return None, ["legacy_binding_migration_stage_records_invalid"]
+        if row.get("ledger_file") != LIGHTRAG_STAGE_LEDGER_FILES[stage]:
+            return None, [f"legacy_binding_migration_ledger_file_invalid:{stage}"]
+        ledger_path = run_dir / LIGHTRAG_STAGE_LEDGER_FILES[stage]
+        if not ledger_path.is_file() or row.get("ledger_sha256") != p0p8.sha256_file(ledger_path):
+            return None, [f"legacy_binding_migration_ledger_hash_mismatch:{stage}"]
+        if row.get("live_recovery_verified") is not True or not isinstance(row.get("selected_identities"), list):
+            return None, [f"legacy_binding_migration_stage_evidence_invalid:{stage}"]
+        seen_stages.add(stage)
+    if migration.get("migrated_stages") != [str(row.get("stage") or "") for row in stage_rows]:
+        return None, ["legacy_binding_migration_stage_order_mismatch"]
+    return migration, []
+
+
+def _binding_migration_attests_stage(migration: Mapping[str, Any] | None, stage: str) -> bool:
+    if not isinstance(migration, Mapping):
+        return False
+    return any(
+        isinstance(row, Mapping) and row.get("stage") == stage
+        for row in migration.get("migrated_stage_ledgers", []) or []
+    )
+
+
+def _current_run_input_bindings(run_dir: Path) -> dict[str, str] | None:
+    try:
+        certification = json.loads((run_dir / "black-label-certification.json").read_text(encoding="utf-8"))
+        cards = list(_read_jsonl(run_dir / "black-label-card-manifest.jsonl"))
+        lightrag_plan = list(_read_jsonl(run_dir / "lightrag-card-apply-plan.jsonl"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    native_bindings = certification.get("certified_input_bindings")
+    if isinstance(native_bindings, Mapping):
+        bindings = _lightrag_input_bindings(
+            str(native_bindings.get("source_p0_p8_certification_hash") or ""),
+            str(native_bindings.get("source_bundle_hash") or ""),
+            cards,
+            lightrag_plan,
+        )
+        return bindings if bindings == dict(native_bindings) else None
+    source_run_text = str(certification.get("source_run") or "")
+    if not source_run_text or source_run_text.startswith("<redacted:"):
+        return None
+    try:
+        source_run = _repo_path(source_run_text)
+        source_certification = json.loads((source_run / "p0-p8-certification.json").read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    source_binding = certification.get("source_bundle_binding")
+    source_bundle_hash = (
+        str(source_binding.get("source_bundle_hash") or "")
+        if isinstance(source_binding, Mapping)
+        else ""
+    )
+    return _lightrag_input_bindings(
+        stable_hash(source_certification),
+        source_bundle_hash,
+        cards,
+        lightrag_plan,
+    )
+
+
+def _regenerated_lightrag_input_bindings(
+    config: BlackLabelConfig,
+    source: SourceBundle,
+    run_dir: Path,
+) -> dict[str, str]:
+    with tempfile.TemporaryDirectory(prefix=".legacy-binding-rebuild-", dir=run_dir.parent) as temporary_root:
+        temporary_root_path = Path(temporary_root).resolve()
+        rebuild_run_id = "binding-rebuild"
+        rebuild_run_dir = (temporary_root_path / rebuild_run_id).resolve()
+        if not rebuild_run_dir.is_relative_to(temporary_root_path):
+            raise ValueError("legacy_binding_rebuild_path_escape")
+        rebuild_config = replace(
+            config,
+            run_id=rebuild_run_id,
+            artifact_root=temporary_root_path,
+            source_run=source.run_dir,
+            black_label_run=None,
+            apply=False,
+        )
+        rebuild_run_dir.mkdir(parents=True, exist_ok=False)
+        registry, _registry_phase = build_asset_registry(rebuild_config, source)
+        visual_queue, _visual_phase = build_visual_enrichment_queue(rebuild_config, registry)
+        regenerated_cards, _card_phase = build_black_label_cards(
+            rebuild_config,
+            source,
+            registry,
+            visual_queue,
+        )
+        regenerated_plan, _plan_phase = build_lightrag_apply_plan(
+            rebuild_config,
+            regenerated_cards,
+        )
+    return _lightrag_input_bindings(
+        stable_hash(source.certification),
+        str(source.binding.get("source_bundle_hash") or ""),
+        regenerated_cards,
+        regenerated_plan,
+    )
+
+
+def _verified_legacy_stage_ledger_records(
+    config: BlackLabelConfig,
+    run_dir: Path,
+    cards: Sequence[Mapping[str, Any]],
+    lightrag_plan: Sequence[Mapping[str, Any]],
+    *,
+    client: Any | None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    card_by_id = _first_by(cards, "card_id")
+    prior_card_ids: set[str] = set()
+    prior_source_keys: set[str] = set()
+    records: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    applied: list[tuple[LightRAGApplyStage, Path, list[dict[str, Any]]]] = []
+    applied_stages: set[str] = set()
+
+    for stage in LIGHTRAG_STAGE_ORDER:
+        path = run_dir / LIGHTRAG_STAGE_LEDGER_FILES[stage]
+        if not path.exists():
+            continue
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            blockers.append(f"legacy_stage_ledger_unreadable:{stage}")
+            continue
+        if not isinstance(ledger, dict):
+            blockers.append(f"legacy_stage_ledger_unreadable:{stage}")
+            continue
+        has_activity = ledger.get("ok") is True or ledger.get("mutation_performed") is True or _safe_int(
+            ledger.get("sent_count")
+        ) > 0
+        if not has_activity:
+            continue
+        if (
+            ledger.get("schema_version") != "black_label_lightrag_stage_apply.v1"
+            or ledger.get("stage") != stage
+            or ledger.get("stage_ledger") != path.name
+        ):
+            blockers.append(f"legacy_stage_ledger_contract_invalid:{stage}")
+            continue
+        if ledger.get("ok") is not True or list(ledger.get("blockers") or []):
+            blockers.append(f"legacy_stage_not_successful:{stage}")
+            continue
+        missing_prerequisites = [
+            prerequisite
+            for prerequisite in LIGHTRAG_STAGE_PREREQUISITES[stage]
+            if prerequisite not in applied_stages
+        ]
+        if missing_prerequisites:
+            blockers.append(f"legacy_stage_prerequisite_missing:{stage}:{','.join(missing_prerequisites)}")
+            continue
+        if "input_bindings" in ledger:
+            blockers.append(f"legacy_stage_already_declares_input_bindings:{stage}")
+            continue
+        expected = _select_lightrag_stage_candidates(
+            stage,
+            lightrag_plan,
+            card_by_id,
+            exclude_card_ids=prior_card_ids,
+            prior_source_keys=prior_source_keys,
+        )
+        expected_ids = [str(candidate.get("card_id") or "") for candidate in expected]
+        selected_rows = [row for row in ledger.get("selected_cards", []) or [] if isinstance(row, Mapping)]
+        selected_ids = [str(row.get("card_id") or "") for row in selected_rows]
+        sent_count = _safe_int(ledger.get("sent_count"))
+        if (
+            _safe_int(ledger.get("selected_count")) != len(selected_rows)
+            or sent_count < 0
+            or sent_count > len(selected_rows)
+            or bool(ledger.get("mutation_performed")) != (sent_count > 0)
+        ):
+            blockers.append(f"legacy_stage_counts_invalid:{stage}")
+            continue
+        if selected_ids != expected_ids or len(selected_rows) != len(expected):
+            blockers.append(f"legacy_stage_selected_identities_mismatch:{stage}")
+            continue
+        expected_projection = _lightrag_stage_ledger(
+            config,
+            run_dir,
+            stage=stage,
+            candidates=expected,
+            batches=[],
+        )["selected_cards"]
+        projection_keys = {
+            "card_id",
+            "card_role",
+            "title",
+            "source_pdf_id",
+            "graph_document_id",
+            "file_source",
+            "rights_status",
+            "raw_source_text_included",
+        }
+        if any(
+            {key: row.get(key) for key in projection_keys}
+            != {key: expected_row.get(key) for key in projection_keys}
+            for row, expected_row in zip(selected_rows, expected_projection, strict=True)
+        ):
+            blockers.append(f"legacy_stage_selected_projection_mismatch:{stage}")
+            continue
+        applied.append((stage, path, expected))
+        applied_stages.add(stage)
+        prior_card_ids.update(expected_ids)
+        prior_source_keys.update(_lightrag_candidate_source_key(candidate) for candidate in expected)
+
+    if blockers or not applied:
+        return records, blockers
+
+    own_client = client is None
+    lightrag = client or LightRAGClient(base_url=config.lightrag_base_url, timeout_s=config.lightrag_timeout_s)
+    try:
+        preflight = _lightrag_preflight(lightrag)
+        if preflight.get("blockers"):
+            return records, [f"legacy_stage_live_preflight_blocked:{preflight['blockers'][0]}"]
+        existing_sources, existing_error = _lightrag_existing_file_sources(lightrag, required=True)
+        if existing_error:
+            return records, [existing_error]
+        for stage, path, expected in applied:
+            expected_file_sources = {str(candidate.get("file_source") or "") for candidate in expected}
+            missing_sources = sorted(expected_file_sources - existing_sources)
+            if missing_sources:
+                return records, [f"legacy_stage_live_source_missing:{stage}:{len(missing_sources)}"]
+            recovery = _verify_lightrag_stage_recovery(
+                lightrag,
+                stage,
+                expected,
+                expected_file_sources,
+                query_timeout_s=config.lightrag_timeout_s,
+            )
+            if recovery["blockers"]:
+                return records, [f"legacy_stage_live_recovery_failed:{stage}"]
+            records.append(
+                {
+                    "stage": stage,
+                    "ledger_file": path.name,
+                    "ledger_sha256": p0p8.sha256_file(path),
+                    "selected_identities": [
+                        {
+                            "card_id": candidate.get("card_id", ""),
+                            "source_key": _lightrag_candidate_source_key(candidate),
+                            "file_source": candidate.get("file_source", ""),
+                        }
+                        for candidate in expected
+                    ],
+                    "live_recovery_verified": True,
+                }
+            )
+    finally:
+        if own_client:
+            close = getattr(lightrag, "close", None)
+            if callable(close):
+                close()
+    return records, []
 
 
 def _normalize_lightrag_stage(stage: str) -> LightRAGApplyStage:
@@ -460,14 +1353,606 @@ def _resolve_black_label_run(config: BlackLabelConfig) -> Path:
     return _latest_black_label_run(config.artifact_root)
 
 
-def _load_black_label_certification(run_dir: Path) -> dict[str, Any]:
+def _load_black_label_certification(run_dir: Path, *, require_green: bool = True) -> dict[str, Any]:
     path = run_dir / "black-label-certification.json"
     if not path.exists():
         raise FileNotFoundError(f"black_label_certification_missing:{_public_path(run_dir)}")
     payload = json.loads(path.read_text(encoding="utf-8"))
-    if payload.get("ok") is not True:
+    if require_green and payload.get("ok") is not True:
         raise ValueError("black_label_run_not_certified")
     return payload
+
+
+def _source_certification_file(value: Any) -> Path | None:
+    text = str(value or "")
+    if not text or text.startswith("<redacted:"):
+        return None
+    source_path = _repo_path(value)
+    certification_path = (
+        source_path
+        if source_path.name == "p0-p8-certification.json"
+        else source_path / "p0-p8-certification.json"
+    )
+    return certification_path if certification_path.is_file() else None
+
+
+def _generation_recipe(config: BlackLabelConfig) -> dict[str, Any]:
+    return {
+        "schema_version": BLACK_LABEL_GENERATION_RECIPE_SCHEMA_VERSION,
+        "limit_pdfs": config.limit_pdfs,
+        "max_card_chars": config.max_card_chars,
+        "text_read_chars": config.text_read_chars,
+        "visual_provider": config.visual_provider,
+        "eval_threshold": config.eval_threshold,
+    }
+
+
+def _generation_config_blocker(config: BlackLabelConfig) -> str | None:
+    if config.limit_pdfs is not None and (
+        isinstance(config.limit_pdfs, bool)
+        or not isinstance(config.limit_pdfs, int)
+        or config.limit_pdfs <= 0
+    ):
+        return "black_label_limit_pdfs_invalid"
+    if (
+        isinstance(config.max_card_chars, bool)
+        or not isinstance(config.max_card_chars, int)
+        or config.max_card_chars <= 0
+    ):
+        return "black_label_max_card_chars_invalid"
+    if (
+        isinstance(config.text_read_chars, bool)
+        or not isinstance(config.text_read_chars, int)
+        or config.text_read_chars <= 0
+    ):
+        return "black_label_text_read_chars_invalid"
+    if not isinstance(config.visual_provider, str) or not config.visual_provider:
+        return "black_label_visual_provider_invalid"
+    if (
+        isinstance(config.eval_threshold, bool)
+        or not isinstance(config.eval_threshold, (int, float))
+        or not 0 < float(config.eval_threshold) <= 1
+    ):
+        return "black_label_eval_threshold_invalid"
+    return None
+
+
+def _config_with_generation_recipe(
+    config: BlackLabelConfig,
+    certification: Mapping[str, Any],
+) -> tuple[BlackLabelConfig, list[str]]:
+    recipe = certification.get("generation_recipe")
+    if recipe is None:
+        if certification.get("generation_recipe_hash") not in {None, ""}:
+            return config, ["black_label_generation_recipe_invalid"]
+        quality_bar = certification.get("quality_bar")
+        eval_threshold = config.eval_threshold
+        if isinstance(quality_bar, Mapping) and "target_eval_threshold" in quality_bar:
+            eval_threshold = quality_bar.get("target_eval_threshold")  # type: ignore[assignment]
+        candidate_config = replace(config, eval_threshold=eval_threshold)
+        if _generation_config_blocker(candidate_config):
+            return config, ["black_label_generation_recipe_invalid"]
+        return replace(candidate_config, eval_threshold=float(candidate_config.eval_threshold)), []
+    if not isinstance(recipe, Mapping):
+        return config, ["black_label_generation_recipe_invalid"]
+    current_keys = set(_generation_recipe(config))
+    schema_version = recipe.get("schema_version")
+    if schema_version == BLACK_LABEL_GENERATION_RECIPE_SCHEMA_VERSION:
+        expected_keys = current_keys
+        eval_threshold = recipe.get("eval_threshold")
+    elif schema_version == LEGACY_BLACK_LABEL_GENERATION_RECIPE_SCHEMA_VERSION:
+        expected_keys = current_keys - {"eval_threshold"}
+        quality_bar = certification.get("quality_bar")
+        eval_threshold = config.eval_threshold
+        if isinstance(quality_bar, Mapping) and "target_eval_threshold" in quality_bar:
+            eval_threshold = quality_bar.get("target_eval_threshold")
+    else:
+        return config, ["black_label_generation_recipe_invalid"]
+    if set(recipe) != expected_keys:
+        return config, ["black_label_generation_recipe_invalid"]
+    limit_pdfs = recipe.get("limit_pdfs")
+    max_card_chars = recipe.get("max_card_chars")
+    text_read_chars = recipe.get("text_read_chars")
+    visual_provider = recipe.get("visual_provider")
+    if certification.get("generation_recipe_hash") != stable_hash(dict(recipe)):
+        return config, ["black_label_generation_recipe_invalid"]
+    candidate_config = replace(
+        config,
+        limit_pdfs=limit_pdfs,
+        max_card_chars=max_card_chars,
+        text_read_chars=text_read_chars,
+        visual_provider=visual_provider,
+        eval_threshold=eval_threshold,
+    )
+    if _generation_config_blocker(candidate_config):
+        return config, ["black_label_generation_recipe_invalid"]
+    return replace(candidate_config, eval_threshold=float(candidate_config.eval_threshold)), []
+
+
+def _lightrag_input_bindings(
+    source_certification_hash: str,
+    source_bundle_hash: str,
+    cards: Sequence[Mapping[str, Any]],
+    lightrag_plan: Sequence[Mapping[str, Any]],
+) -> dict[str, str]:
+    return {
+        "source_p0_p8_certification_hash": source_certification_hash,
+        "source_bundle_hash": source_bundle_hash,
+        "black_label_card_manifest_hash": stable_hash(list(cards)),
+        "lightrag_apply_plan_hash": stable_hash(list(lightrag_plan)),
+    }
+
+
+def _source_run_is_black_label_alias(config: BlackLabelConfig, run_dir: Path) -> bool:
+    if config.black_label_run is not None or config.source_run is None:
+        return False
+    candidate = _repo_path(config.source_run)
+    return candidate.resolve() == run_dir.resolve() and (candidate / "black-label-certification.json").is_file()
+
+
+def _source_bundle_by_recorded_binding(
+    config: BlackLabelConfig,
+    generation_config: BlackLabelConfig,
+    *,
+    source_certification_hash: str,
+    bundle_hash: str,
+) -> tuple[SourceBundle | None, list[str]]:
+    if not source_certification_hash or not bundle_hash:
+        return None, ["certified_source_bundle_binding_missing"]
+    root = _repo_path(config.source_root)
+    try:
+        resolved_root = root.resolve(strict=True)
+    except OSError:
+        return None, ["certified_source_bundle_not_found_under_source_root"]
+    candidate_paths = [
+        root / "p0-p8-certification.json",
+        *sorted(root.glob("*/p0-p8-certification.json")),
+    ]
+    matches: list[SourceBundle] = []
+    seen: set[Path] = set()
+    for certification_path in candidate_paths:
+        try:
+            resolved_path = certification_path.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved_path in seen or not resolved_path.is_relative_to(resolved_root):
+            continue
+        seen.add(resolved_path)
+        try:
+            source = load_source_bundle(
+                replace(generation_config, source_run=certification_path.parent)
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        candidate_certification_hash = stable_hash(source.certification)
+        source_bundle_hash = str(source.binding.get("source_bundle_hash") or "")
+        if secrets.compare_digest(
+            candidate_certification_hash,
+            source_certification_hash,
+        ) and secrets.compare_digest(source_bundle_hash, bundle_hash):
+            matches.append(source)
+    if len(matches) == 1:
+        return matches[0], []
+    if len(matches) > 1:
+        return None, ["certified_source_bundle_ambiguous_under_source_root"]
+    return None, ["certified_source_bundle_not_found_under_source_root"]
+
+
+def _current_lightrag_input_bindings(
+    config: BlackLabelConfig,
+    run_dir: Path,
+    *,
+    cards: Sequence[Mapping[str, Any]],
+    lightrag_plan: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, str], list[str], str]:
+    certification = _load_black_label_certification(run_dir, require_green=False)
+    black_label_certification_hash = stable_hash(certification)
+    recorded_source_hash = str(certification.get("source_p0_p8_certification_hash") or "")
+    recorded_source_binding = certification.get("source_bundle_binding")
+    recorded_bundle_hash = (
+        str(recorded_source_binding.get("source_bundle_hash") or "")
+        if isinstance(recorded_source_binding, Mapping)
+        else ""
+    )
+    generation_config, blockers = _config_with_generation_recipe(config, certification)
+    explicit_source_value = None if _source_run_is_black_label_alias(config, run_dir) else config.source_run
+    explicit_source_path = _source_certification_file(explicit_source_value)
+    certified_source_path = _source_certification_file(certification.get("source_run"))
+    if explicit_source_value is not None and explicit_source_path is None:
+        blockers.append("explicit_source_run_unavailable")
+    if explicit_source_path is not None and certified_source_path is not None:
+        if explicit_source_path.resolve() != certified_source_path.resolve():
+            blockers.append("explicit_source_run_mismatch")
+    source_certification_path = explicit_source_path or certified_source_path
+    source_bundle: SourceBundle | None = None
+    if source_certification_path is not None:
+        try:
+            source_bundle = load_source_bundle(
+                replace(generation_config, source_run=source_certification_path.parent)
+            )
+        except Exception as exc:  # noqa: BLE001
+            blockers.append(f"source_p0_p8_bundle_unavailable:{exc.__class__.__name__}")
+            try:
+                source_payload = _read_json_snapshot(source_certification_path)
+            except Exception:  # noqa: BLE001
+                current_source_hash = recorded_source_hash
+            else:
+                blockers.extend(_source_certification_contract_blockers(source_payload))
+                current_source_hash = stable_hash(source_payload)
+            current_bundle_hash = recorded_bundle_hash
+    else:
+        current_source_hash = recorded_source_hash
+        current_bundle_hash = recorded_bundle_hash
+        if explicit_source_value is None:
+            source_bundle, lookup_blockers = _source_bundle_by_recorded_binding(
+                config,
+                generation_config,
+                source_certification_hash=recorded_source_hash,
+                bundle_hash=recorded_bundle_hash,
+            )
+            blockers.extend(lookup_blockers)
+        else:
+            blockers.append("source_p0_p8_certification_unavailable")
+    if source_bundle is not None:
+        current_source_hash = stable_hash(source_bundle.certification)
+        current_bundle_hash = str(source_bundle.binding.get("source_bundle_hash") or "")
+        (
+            source_schema,
+            source_provenance,
+            source_authorization,
+            source_attestation,
+        ) = _source_rollout_authorization(
+            source_bundle.certification,
+            source_bundle_binding=source_bundle.binding,
+            legacy_source_certification_hash=config.legacy_source_certification_hash,
+            legacy_source_bundle_hash=config.legacy_source_bundle_hash,
+        )
+        blockers.extend(_governed_p1_blockers(source_authorization))
+        expected_source_fields = {
+            "source_rollout_schema_version": source_schema,
+            "source_rollout_provenance": source_provenance,
+            "source_governed_p1_authorization": source_authorization,
+            "source_legacy_attestation": source_attestation,
+            "source_bundle_binding": source_bundle.binding,
+        }
+        for key, expected in expected_source_fields.items():
+            if certification.get(key) != expected:
+                blockers.append(f"black_label_source_authorization_mismatch:{key}")
+    bindings = _lightrag_input_bindings(current_source_hash, current_bundle_hash, cards, lightrag_plan)
+    if source_bundle is not None:
+        try:
+            canonical_bindings = _regenerated_lightrag_input_bindings(generation_config, source_bundle, run_dir)
+        except Exception as exc:  # noqa: BLE001
+            blockers.append(f"source_p0_p8_canonical_regeneration_error:{exc.__class__.__name__}")
+        else:
+            for key, expected in canonical_bindings.items():
+                if bindings.get(key) != expected:
+                    blockers.append(f"black_label_source_canonical_mismatch:{key}")
+    certified_bindings = certification.get("certified_input_bindings")
+    if not isinstance(certified_bindings, Mapping):
+        migration, migration_blockers = _validated_binding_migration(run_dir, bindings)
+        if migration is None:
+            blockers.extend(migration_blockers)
+    elif dict(certified_bindings) != bindings:
+        blockers.append("certified_input_bindings_mismatch")
+    if not recorded_source_hash:
+        blockers.append("source_p0_p8_certification_hash_missing")
+    elif current_source_hash != recorded_source_hash:
+        blockers.append("source_p0_p8_certification_hash_mismatch")
+    if not recorded_bundle_hash:
+        blockers.append("source_bundle_hash_missing")
+    elif current_bundle_hash != recorded_bundle_hash:
+        blockers.append("source_bundle_hash_mismatch")
+    for key, value in bindings.items():
+        if not value:
+            blockers.append(f"lightrag_input_binding_missing:{key}")
+    try:
+        current_certification = _load_black_label_certification(run_dir, require_green=False)
+    except Exception:  # noqa: BLE001
+        blockers.append("black_label_certification_changed_during_validation")
+    else:
+        if not secrets.compare_digest(
+            black_label_certification_hash,
+            stable_hash(current_certification),
+        ):
+            blockers.append("black_label_certification_changed_during_validation")
+    return bindings, blockers, black_label_certification_hash
+
+
+def _lightrag_stage_replay_blocker(ledger_path: Path, stage: LightRAGApplyStage) -> str | None:
+    if not ledger_path.exists():
+        return None
+    try:
+        existing = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return f"existing_stage_ledger_unreadable:{stage}"
+    if not isinstance(existing, Mapping):
+        return f"existing_stage_ledger_unreadable:{stage}"
+    if existing.get("ok") is True or existing.get("mutation_performed") is True or _safe_int(existing.get("sent_count")) > 0:
+        return f"existing_stage_ledger_blocks_replay:{stage}"
+    return None
+
+
+def _lightrag_fencing_capability_blocker(client: Any) -> str | None:
+    capability_reader = getattr(client, "mutation_fencing_capability", None)
+    insert_once = getattr(client, "insert_texts_once", None)
+    if not callable(capability_reader) or not callable(insert_once):
+        return "lightrag_service_enforced_fencing_unavailable"
+    try:
+        capability = capability_reader()
+    except Exception:  # noqa: BLE001
+        return "lightrag_service_enforced_fencing_unavailable"
+    required_bindings = {
+        "black_label_certification_hash",
+        "stage",
+        "input_bindings_hash",
+        "batch_id",
+        "ordered_payload_hashes",
+        "file_sources",
+        "expires_at_epoch",
+        "nonce",
+    }
+    if (
+        not isinstance(capability, Mapping)
+        or capability.get("available") is not True
+        or capability.get("service_enforced") is not True
+        or capability.get("single_use") is not True
+        or set(capability.get("binding_fields") or []) != required_bindings
+    ):
+        return "lightrag_service_enforced_fencing_unavailable"
+    return None
+
+
+def _verify_black_label_certification_snapshot(
+    run_dir: Path,
+    input_bindings: Mapping[str, str],
+    expected_black_label_certification_hash: str,
+) -> None:
+    certification = _load_black_label_certification(run_dir, require_green=False)
+    if (
+        certification.get("ok") is not True
+        or certification.get("certified_input_bindings") != dict(input_bindings)
+        or not secrets.compare_digest(
+            stable_hash(certification),
+            expected_black_label_certification_hash,
+        )
+    ):
+        raise ValueError("black_label_certification_changed_before_fence")
+
+
+def _lightrag_stage_claim_payload(
+    run_dir: Path,
+    stage: LightRAGApplyStage,
+    input_bindings: Mapping[str, str],
+    black_label_certification_hash: str,
+    candidates: Sequence[Mapping[str, Any]],
+    batches: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    _verify_black_label_certification_snapshot(
+        run_dir,
+        input_bindings,
+        black_label_certification_hash,
+    )
+    payload = {
+        "schema_version": LIGHTRAG_STAGE_CLAIM_SCHEMA_VERSION,
+        "black_label_certification_hash": black_label_certification_hash,
+        "stage": stage,
+        "input_bindings_hash": stable_hash(dict(input_bindings)),
+        "selected_card_ids": [str(candidate.get("card_id") or "") for candidate in candidates],
+        "batch_ids": [str(batch.get("batch_id") or "") for batch in batches],
+    }
+    payload["claim_id"] = stable_hash(payload)
+    return payload
+
+
+def _write_exclusive_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(_public_payload(dict(payload)), handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def _lightrag_fence_request(
+    run_dir: Path,
+    stage: LightRAGApplyStage,
+    input_bindings: Mapping[str, str],
+    black_label_certification_hash: str,
+    batch: Mapping[str, Any],
+    candidates: Sequence[Mapping[str, Any]],
+    *,
+    timeout_s: float,
+) -> dict[str, Any]:
+    _verify_black_label_certification_snapshot(
+        run_dir,
+        input_bindings,
+        black_label_certification_hash,
+    )
+    operation_identity = {
+        "schema_version": LIGHTRAG_FENCE_SCHEMA_VERSION,
+        "stage": stage,
+        "input_bindings_hash": stable_hash(dict(input_bindings)),
+        "batch_id": str(batch.get("batch_id") or ""),
+        "ordered_payload_hashes": [stable_hash(str(candidate.get("payload") or "")) for candidate in candidates],
+        "file_sources": [str(candidate.get("file_source") or "") for candidate in candidates],
+    }
+    operation_hash = stable_hash(operation_identity)
+    immutable_binding = {
+        **operation_identity,
+        "black_label_certification_hash": black_label_certification_hash,
+        "nonce": operation_hash[:32],
+    }
+    request = {
+        **immutable_binding,
+        "expires_at_epoch": int(time.time()) + max(60, int(timeout_s)),
+    }
+    request["fence_token"] = operation_hash
+    request["binding_hash"] = stable_hash(request)
+    return request
+
+
+def _lightrag_fence_receipt_valid(
+    response: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> bool:
+    receipt = response.get("fence_receipt")
+    return bool(
+        isinstance(receipt, Mapping)
+        and receipt.get("schema_version") == LIGHTRAG_FENCE_RECEIPT_SCHEMA_VERSION
+        and receipt.get("accepted") is True
+        and receipt.get("single_use_enforced") is True
+        and receipt.get("fence_token") == request.get("fence_token")
+        and receipt.get("binding_hash") == request.get("binding_hash")
+    )
+
+
+def _normalized_governed_p1_authorization(
+    *,
+    schema: str,
+    provenance: str,
+    authorization: Any,
+) -> dict[str, bool]:
+    values = authorization if isinstance(authorization, Mapping) else {}
+    valid_legacy = not schema and provenance == LEGACY_ROLLOUT_PROVENANCE
+    valid_governed = schema == GOVERNED_ROLLOUT_SCHEMA_VERSION and provenance == GOVERNED_ROLLOUT_PROVENANCE
+    provenance_valid = valid_legacy or valid_governed
+    return {
+        "provenance_valid": provenance_valid,
+        "required": True,
+        "authorized": provenance_valid and values.get("authorized") is True,
+        "separately_reviewed": provenance_valid and values.get("separately_reviewed") is True,
+        "controller_ready": provenance_valid and values.get("controller_ready") is True,
+    }
+
+
+def _legacy_source_hash_attested(expected_hash: str, supplied_hash: str) -> bool:
+    return bool(expected_hash and supplied_hash) and secrets.compare_digest(expected_hash, supplied_hash)
+
+
+def _legacy_source_attestation(
+    certification: Mapping[str, Any],
+    source_bundle_binding: Mapping[str, Any],
+    supplied_certification_hash: str,
+    supplied_bundle_hash: str,
+) -> dict[str, Any] | None:
+    if _source_certification_contract_blockers(certification):
+        return None
+    schema = str(certification.get("rollout_schema_version") or "")
+    provenance = str(certification.get("rollout_provenance") or "")
+    certification_hash = stable_hash(certification)
+    if schema or provenance not in {"", LEGACY_ROLLOUT_PROVENANCE}:
+        return None
+    source_bundle_hash = str(source_bundle_binding.get("source_bundle_hash") or "")
+    if not _legacy_source_hash_attested(certification_hash, supplied_certification_hash):
+        return None
+    if not _legacy_source_hash_attested(source_bundle_hash, supplied_bundle_hash):
+        return None
+    payload = {
+        "schema_version": LEGACY_SOURCE_ATTESTATION_SCHEMA_VERSION,
+        "source_p0_p8_certification_hash": certification_hash,
+        "source_bundle_hash": source_bundle_hash,
+        "rollout_provenance": LEGACY_ROLLOUT_PROVENANCE,
+        "operator_explicit": True,
+    }
+    payload["attestation_id"] = stable_hash(payload)
+    return payload
+
+
+def _source_rollout_authorization(
+    certification: Mapping[str, Any],
+    *,
+    source_bundle_binding: Mapping[str, Any] | None = None,
+    legacy_source_certification_hash: str = "",
+    legacy_source_bundle_hash: str = "",
+) -> tuple[str, str, dict[str, bool], dict[str, Any] | None]:
+    schema = str(certification.get("rollout_schema_version") or "")
+    provenance = str(certification.get("rollout_provenance") or "")
+    authorization: Any = certification.get("governed_p1_authorization")
+    attestation = _legacy_source_attestation(
+        certification,
+        source_bundle_binding or {},
+        legacy_source_certification_hash,
+        legacy_source_bundle_hash,
+    )
+    if attestation is not None:
+        provenance = LEGACY_ROLLOUT_PROVENANCE
+        authorization = {
+            "authorized": True,
+            "separately_reviewed": True,
+            "controller_ready": True,
+        }
+    normalized = _normalized_governed_p1_authorization(
+        schema=schema,
+        provenance=provenance,
+        authorization=authorization,
+    )
+    return schema, provenance, normalized, attestation
+
+
+def _governed_p1_controller_authorized(authorization: Mapping[str, Any]) -> bool:
+    return authorization.get("provenance_valid") is True and all(
+        authorization.get(key) is True
+        for key in ("authorized", "separately_reviewed", "controller_ready")
+    )
+
+
+def _governed_p1_blockers(authorization: Mapping[str, Any]) -> list[str]:
+    if authorization.get("provenance_valid") is not True:
+        return [GOVERNED_P1_PROVENANCE_BLOCKER]
+    if not _governed_p1_controller_authorized(authorization):
+        return [GOVERNED_P1_AUTHORIZATION_BLOCKER]
+    return []
+
+
+def _black_label_governed_p1_authorization(
+    certification: Mapping[str, Any],
+    *,
+    legacy_source_certification_hash: str = "",
+    legacy_source_bundle_hash: str = "",
+) -> dict[str, bool]:
+    source_schema = str(certification.get("source_rollout_schema_version") or "")
+    direct_schema = str(certification.get("rollout_schema_version") or "")
+    source_provenance = str(certification.get("source_rollout_provenance") or "")
+    direct_provenance = str(certification.get("rollout_provenance") or "")
+    source_declared = any(
+        key in certification
+        for key in (
+            "source_rollout_schema_version",
+            "source_rollout_provenance",
+            "source_governed_p1_authorization",
+        )
+    )
+    use_source = source_schema == GOVERNED_ROLLOUT_SCHEMA_VERSION or (
+        source_declared and direct_schema != GOVERNED_ROLLOUT_SCHEMA_VERSION
+    )
+    schema = source_schema if use_source else direct_schema
+    provenance = source_provenance if use_source else direct_provenance
+    authorization_key = "source_governed_p1_authorization" if use_source else "governed_p1_authorization"
+    authorization: Any = certification.get(authorization_key)
+    if provenance == LEGACY_ROLLOUT_PROVENANCE:
+        attestation = certification.get("source_legacy_attestation")
+        attested_bundle_hash = (
+            str(attestation.get("source_bundle_hash") or "")
+            if isinstance(attestation, Mapping)
+            else ""
+        )
+        if not (
+            _legacy_source_hash_attested(
+                str(certification.get("source_p0_p8_certification_hash") or ""),
+                legacy_source_certification_hash,
+            )
+            and _legacy_source_hash_attested(attested_bundle_hash, legacy_source_bundle_hash)
+        ):
+            authorization = {}
+    return _normalized_governed_p1_authorization(
+        schema=schema,
+        provenance=provenance,
+        authorization=authorization,
+    )
 
 
 def _select_lightrag_stage_candidates(
@@ -476,6 +1961,7 @@ def _select_lightrag_stage_candidates(
     card_by_id: Mapping[str, Mapping[str, Any]],
     *,
     exclude_card_ids: set[str] | None = None,
+    prior_source_keys: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     rows_by_card = _first_by(plan_rows, "card_id")
     excluded = exclude_card_ids or set()
@@ -506,7 +1992,12 @@ def _select_lightrag_stage_candidates(
     if stage == "one_document_sample":
         return eligible[:1]
     if stage == "five_document_sample":
-        return _take_distinct_sources(eligible, int(limit or 5))
+        prior_sources = prior_source_keys or set()
+        remaining = max(0, int(limit or 5) - len(prior_sources))
+        new_source_candidates = [
+            candidate for candidate in eligible if _lightrag_candidate_source_key(candidate) not in prior_sources
+        ]
+        return _take_distinct_sources(new_source_candidates, remaining)
     if stage == "topic_cluster_sample":
         return _take_topic_cluster(eligible, int(limit or 100))
     return eligible
@@ -533,23 +2024,23 @@ def _lightrag_candidate_sort_key(candidate: Mapping[str, Any]) -> tuple[int, str
 
 
 def _take_distinct_sources(candidates: Sequence[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
     selected: list[dict[str, Any]] = []
     seen_sources: set[str] = set()
     for candidate in candidates:
-        source_key = str(candidate.get("source_hash") or candidate.get("source_pdf_id") or candidate.get("card_id"))
+        source_key = _lightrag_candidate_source_key(candidate)
         if source_key in seen_sources:
             continue
         selected.append(candidate)
         seen_sources.add(source_key)
         if len(selected) >= limit:
             return selected
-    for candidate in candidates:
-        if candidate in selected:
-            continue
-        selected.append(candidate)
-        if len(selected) >= limit:
-            break
     return selected
+
+
+def _lightrag_candidate_source_key(candidate: Mapping[str, Any]) -> str:
+    return str(candidate.get("source_hash") or candidate.get("source_pdf_id") or candidate.get("card_id") or "")
 
 
 def _take_topic_cluster(candidates: Sequence[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -597,6 +2088,7 @@ def _lightrag_stage_ledger(
     batches: Sequence[Mapping[str, Any]],
     ok: bool = False,
     blockers: Sequence[str] = (),
+    input_bindings: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     selected_cards = []
     for candidate in candidates:
@@ -608,6 +2100,7 @@ def _lightrag_stage_ledger(
                 "card_role": card.get("card_role", ""),
                 "title": card.get("title", ""),
                 "source_pdf_id": card.get("source_pdf_id", ""),
+                "source_hash": candidate.get("source_hash", ""),
                 "graph_document_id": plan.get("graph_document_id", ""),
                 "file_source": candidate.get("file_source", ""),
                 "rights_status": card.get("rights_status", ""),
@@ -621,9 +2114,12 @@ def _lightrag_stage_ledger(
         "base_url": config.lightrag_base_url,
         "stage": stage,
         "stage_ledger": LIGHTRAG_STAGE_LEDGER_FILES[stage],
+        "input_bindings": dict(input_bindings or {}),
         "ok": ok,
         "blockers": list(blockers),
         "mutation_performed": False,
+        "mutation_attempted": False,
+        "mutation_state": "not_attempted",
         "selected_count": len(selected_cards),
         "sent_count": 0,
         "skipped_sources": [],
@@ -699,11 +2195,25 @@ def _lightrag_existing_file_sources(client: Any, *, required: bool = False) -> t
         return set(), None
 
 
-def _lightrag_stage_prerequisite_blockers(run_dir: Path, stage: LightRAGApplyStage) -> list[str]:
-    blockers: list[str] = []
-    certification = _load_black_label_certification(run_dir)
+def _lightrag_stage_prerequisite_blockers(
+    config: BlackLabelConfig,
+    run_dir: Path,
+    stage: LightRAGApplyStage,
+    *,
+    input_bindings: Mapping[str, str],
+    input_binding_blockers: Sequence[str] = (),
+) -> list[str]:
+    blockers = list(input_binding_blockers)
+    migration, _migration_blockers = _validated_binding_migration(run_dir, input_bindings)
+    certification = _load_black_label_certification(run_dir, require_green=False)
     if certification.get("ok") is not True:
         blockers.append("black_label_certification_not_green")
+    authorization = _black_label_governed_p1_authorization(
+        certification,
+        legacy_source_certification_hash=config.legacy_source_certification_hash,
+        legacy_source_bundle_hash=config.legacy_source_bundle_hash,
+    )
+    blockers.extend(_governed_p1_blockers(authorization))
     if stage == "full_corpus_after_certification":
         quality_bar = certification.get("quality_bar") if isinstance(certification.get("quality_bar"), Mapping) else {}
         rollout_gates = certification.get("rollout_gates") if isinstance(certification.get("rollout_gates"), Mapping) else {}
@@ -722,6 +2232,12 @@ def _lightrag_stage_prerequisite_blockers(run_dir: Path, stage: LightRAGApplySta
         except json.JSONDecodeError:
             blockers.append(f"invalid_prerequisite_ledger:{prerequisite}")
             continue
+        ledger_bindings = ledger.get("input_bindings")
+        if (
+            not isinstance(ledger_bindings, Mapping)
+            or dict(ledger_bindings) != dict(input_bindings)
+        ) and not _binding_migration_attests_stage(migration, prerequisite):
+            blockers.append(f"prerequisite_input_bindings_mismatch:{prerequisite}")
         if ledger.get("ok") is not True:
             blockers.append(f"blocked_prerequisite_ledger:{prerequisite}")
     return blockers
@@ -748,8 +2264,49 @@ def _lightrag_prior_stage_card_ids(run_dir: Path, stage: LightRAGApplyStage) -> 
     return prior_ids
 
 
-def _load_lightrag_stage_ledgers(run_dir: Path) -> dict[str, dict[str, Any]]:
+def _lightrag_prior_stage_source_keys(run_dir: Path, stage: LightRAGApplyStage) -> set[str]:
+    prior_sources: set[str] = set()
+    bindings = _current_run_input_bindings(run_dir)
+    migration = _validated_binding_migration(run_dir, bindings)[0] if bindings is not None else None
+    migrated_source_keys = {
+        (str(row.get("stage") or ""), str(identity.get("card_id") or "")): str(identity.get("source_key") or "")
+        for row in (migration or {}).get("migrated_stage_ledgers", []) or []
+        if isinstance(row, Mapping)
+        for identity in row.get("selected_identities", []) or []
+        if isinstance(identity, Mapping)
+    }
+    for prior_stage in LIGHTRAG_STAGE_ORDER:
+        if prior_stage == stage:
+            break
+        path = run_dir / LIGHTRAG_STAGE_LEDGER_FILES[prior_stage]
+        if not path.exists():
+            continue
+        try:
+            ledger = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        for card in ledger.get("selected_cards", []) or []:
+            if not isinstance(card, Mapping):
+                continue
+            card_id = str(card.get("card_id") or "")
+            source_key = str(
+                card.get("source_hash")
+                or migrated_source_keys.get((prior_stage, card_id))
+                or card.get("source_pdf_id")
+                or card_id
+            )
+            if source_key:
+                prior_sources.add(source_key)
+    return prior_sources
+
+
+def _load_lightrag_stage_ledgers(
+    run_dir: Path,
+    *,
+    input_bindings: Mapping[str, str] | None = None,
+) -> dict[str, dict[str, Any]]:
     ledgers: dict[str, dict[str, Any]] = {}
+    migration = _validated_binding_migration(run_dir, input_bindings)[0] if input_bindings is not None else None
     for stage, filename in LIGHTRAG_STAGE_LEDGER_FILES.items():
         path = run_dir / filename
         if not path.exists():
@@ -759,6 +2316,16 @@ def _load_lightrag_stage_ledgers(run_dir: Path) -> dict[str, dict[str, Any]]:
         except json.JSONDecodeError:
             payload = {"ok": False, "blockers": ["invalid_stage_ledger_json"], "stage": stage}
         if isinstance(payload, dict):
+            if (
+                input_bindings is not None
+                and payload.get("input_bindings") != dict(input_bindings)
+                and not _binding_migration_attests_stage(migration, stage)
+            ):
+                payload = {
+                    **payload,
+                    "ok": False,
+                    "blockers": [*payload.get("blockers", []), "stage_input_bindings_mismatch"],
+                }
             ledgers[stage] = _public_payload(payload)
     return ledgers
 
@@ -1114,7 +2681,15 @@ def build_black_label_cards(
         if kind == "pdf":
             cards.extend(_pdf_cards(config, asset))
         elif kind == "text":
-            cards.extend(_text_cards(config, asset, source_record_by_package.get(str(asset.get("package_key") or ""), {})))
+            package_key = str(asset.get("package_key") or "")
+            cards.extend(
+                _text_cards(
+                    config,
+                    asset,
+                    source_record_by_package.get(package_key, {}),
+                    source.text_artifacts.get(package_key),
+                )
+            )
         elif kind in {"image", "table", "page"}:
             cards.append(_visual_evidence_card(config, asset, visual_by_asset.get(str(asset.get("asset_id") or ""), {})))
 
@@ -1380,6 +2955,18 @@ def certify_run(
         blockers.append("source_p0p8_not_certified")
     if source.certification.get("mutation_performed"):
         blockers.append("source_p0p8_mutated")
+    (
+        source_rollout_schema,
+        source_rollout_provenance,
+        source_authorization,
+        source_legacy_attestation,
+    ) = _source_rollout_authorization(
+        source.certification,
+        source_bundle_binding=source.binding,
+        legacy_source_certification_hash=config.legacy_source_certification_hash,
+        legacy_source_bundle_hash=config.legacy_source_bundle_hash,
+    )
+    blockers.extend(_governed_p1_blockers(source_authorization))
     if not registry:
         blockers.append("missing_asset_registry")
     if not cards:
@@ -1417,7 +3004,15 @@ def certify_run(
     leaks = find_public_leaks(public_payload)
     if leaks:
         blockers.append("public_leak_detected")
-    stage_ledgers = _load_lightrag_stage_ledgers(config.run_dir)
+    source_certification_hash = stable_hash(source.certification)
+    source_bundle_hash = str(source.binding.get("source_bundle_hash") or "")
+    input_bindings = _lightrag_input_bindings(
+        source_certification_hash,
+        source_bundle_hash,
+        cards,
+        lightrag_plan,
+    )
+    stage_ledgers = _load_lightrag_stage_ledgers(config.run_dir, input_bindings=input_bindings)
     rollout_gates = _rollout_gates(registry=registry, leaks=leaks, stage_ledgers=stage_ledgers)
     full_corpus_apply_allowed = (
         not blockers
@@ -1426,10 +3021,20 @@ def certify_run(
         and rollout_gates["gate_3_lightrag_topic_cluster"] == "pass"
     )
 
+    generation_recipe = _generation_recipe(config)
     certification = {
         "schema_version": CERTIFICATION_SCHEMA_VERSION,
         "run_id": config.run_id,
         "source_run": _public_path(source.run_dir),
+        "source_p0_p8_certification_hash": source_certification_hash,
+        "source_bundle_binding": source.binding,
+        "source_rollout_schema_version": source_rollout_schema,
+        "source_rollout_provenance": source_rollout_provenance,
+        "source_governed_p1_authorization": source_authorization,
+        "source_legacy_attestation": source_legacy_attestation,
+        "generation_recipe": generation_recipe,
+        "generation_recipe_hash": stable_hash(generation_recipe),
+        "certified_input_bindings": input_bindings,
         "ok": not blockers,
         "dry_run": not config.apply,
         "mutation_performed": False,
@@ -1528,8 +3133,13 @@ def _pdf_cards(config: BlackLabelConfig, asset: Mapping[str, Any]) -> list[dict[
     ]
 
 
-def _text_cards(config: BlackLabelConfig, asset: Mapping[str, Any], source_record: Mapping[str, Any]) -> list[dict[str, Any]]:
-    text_stats = _text_stats(asset, source_record, config)
+def _text_cards(
+    config: BlackLabelConfig,
+    asset: Mapping[str, Any],
+    source_record: Mapping[str, Any],
+    text_snapshot: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    text_stats = _text_stats(asset, source_record, config, text_snapshot)
     title = str(asset.get("public_label") or asset.get("source_pdf_id") or "text")
     rights_status = "blocked" if text_stats["rights_warnings"] else "clear"
     card = _card_row(
@@ -1613,21 +3223,21 @@ def _card_row(
     return _public_payload(card)
 
 
-def _text_stats(asset: Mapping[str, Any], source_record: Mapping[str, Any], config: BlackLabelConfig) -> dict[str, Any]:
-    path_text = str(source_record.get("output_relative_path") or asset.get("output_relative_path") or "")
-    path = _repo_path(path_text)
+def _text_stats(
+    asset: Mapping[str, Any],
+    source_record: Mapping[str, Any],
+    config: BlackLabelConfig,
+    text_snapshot: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    del asset, source_record
     warnings: list[str] = []
     heading_seeds: list[str] = []
-    observed_chars = 0
-    read_chars = 0
-    truncated = False
-    if path_text and path.exists() and path.is_file():
-        observed_chars = path.stat().st_size
-        with path.open("r", encoding="utf-8", errors="replace") as handle:
-            sample = handle.read(config.text_read_chars + 1)
-        text = sample[: config.text_read_chars]
-        read_chars = len(text)
-        truncated = len(sample) > config.text_read_chars or observed_chars > read_chars
+    snapshot = text_snapshot if isinstance(text_snapshot, Mapping) else {}
+    observed_chars = _safe_int(snapshot.get("byte_count"))
+    text = str(snapshot.get("sample") or "")[: config.text_read_chars]
+    read_chars = len(text)
+    truncated = bool(snapshot.get("truncated"))
+    if snapshot.get("status") == "available":
         lowered = text.lower()
         warnings.extend(pattern for pattern in RIGHTS_BLOCK_PATTERNS if pattern in lowered)
         heading_seeds = _heading_seeds(text)
@@ -1910,12 +3520,15 @@ def _next_apply_boundary(rollout_gates: Mapping[str, Any]) -> str:
 
 def _write_text_atomic(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_name(f".{path.name}.tmp")
-    with tmp_path.open("w", encoding="utf-8") as handle:
-        handle.write(content)
-        handle.flush()
-        os.fsync(handle.fileno())
-    tmp_path.replace(path)
+    tmp_path = path.with_name(f".{path.name}.tmp-{os.getpid()}-{secrets.token_hex(8)}")
+    try:
+        with tmp_path.open("x", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 def _repo_path(value: Any) -> Path:
@@ -1987,14 +3600,28 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["run-all", "refresh-certification", "apply-lightrag-sample", "apply-lightrag-stage"],
+        choices=[
+            "run-all",
+            "refresh-certification",
+            "migrate-legacy-bindings",
+            "apply-lightrag-sample",
+            "apply-lightrag-stage",
+        ],
         default="run-all",
     )
     parser.add_argument("--run-id", default=build_run_id())
     parser.add_argument("--artifact-root", type=Path, default=DEFAULT_ARTIFACT_ROOT)
     parser.add_argument("--source-run", type=Path, help="Certified P0-P8 source run for dry-run generation. Legacy sample apply also accepts a Black Label run here.")
     parser.add_argument("--black-label-run", type=Path, help="Generated Black Label run directory for staged apply or certification refresh.")
-    parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
+    parser.add_argument(
+        "--source-root",
+        type=Path,
+        default=DEFAULT_SOURCE_ROOT,
+        help=(
+            "Root containing certified P0-P8 runs. Also used to recover an exact source "
+            "bundle by its certified hashes when a Black Label artifact redacts source_run."
+        ),
+    )
     parser.add_argument("--limit-pdfs", type=int)
     parser.add_argument("--max-card-chars", type=int, default=DEFAULT_CARD_MAX_CHARS)
     parser.add_argument("--text-read-chars", type=int, default=DEFAULT_TEXT_READ_CHARS)
@@ -2012,6 +3639,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lightrag-stage", choices=list(LIGHTRAG_STAGE_LEDGER_FILES), default="one_document_sample")
     parser.add_argument("--lightrag-batch-max-cards", type=int, default=DEFAULT_LIGHTRAG_BATCH_MAX_CARDS)
     parser.add_argument("--lightrag-batch-max-chars", type=int, default=DEFAULT_LIGHTRAG_BATCH_MAX_CHARS)
+    parser.add_argument(
+        "--legacy-source-certification-hash",
+        default="",
+        help=(
+            "Explicitly attest one canonical P0-P8 certification hash as legacy_p0p8_v1. "
+            "Required for every legacy certification, refresh, migration, and apply operation."
+        ),
+    )
+    parser.add_argument(
+        "--legacy-source-bundle-hash",
+        default="",
+        help=(
+            "Explicitly attest the composite hash of the certification, normalized output, "
+            "crosswalk, CAG candidates, and referenced text artifacts. Required with the "
+            "legacy certification hash for every legacy operation."
+        ),
+    )
     parser.add_argument("--apply", action="store_true", help="Reserved for future apply paths; currently fails closed.")
     return parser.parse_args(argv)
 
@@ -2042,12 +3686,19 @@ def config_from_args(args: argparse.Namespace) -> BlackLabelConfig:
         lightrag_stage=args.lightrag_stage,
         lightrag_batch_max_cards=args.lightrag_batch_max_cards,
         lightrag_batch_max_chars=args.lightrag_batch_max_chars,
+        legacy_source_certification_hash=args.legacy_source_certification_hash,
+        legacy_source_bundle_hash=args.legacy_source_bundle_hash,
     )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     config = config_from_args(args)
+    if args.command == "run-all":
+        generation_blocker = _generation_config_blocker(config)
+        if generation_blocker:
+            print(json.dumps({"ok": False, "blockers": [generation_blocker]}, indent=2, sort_keys=True))
+            return 2
     if args.command == "apply-lightrag-sample":
         ledger = apply_lightrag_sample(config)
         print(
@@ -2109,6 +3760,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         )
         return 0 if certification.get("ok") else 2
+    if args.command == "migrate-legacy-bindings":
+        if not args.black_label_run:
+            print(json.dumps({"ok": False, "blockers": ["use_black_label_run_for_binding_migration"]}, indent=2, sort_keys=True))
+            return 2
+        result = migrate_legacy_lightrag_bindings(config)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("ok") else 2
 
     result = run_all(config)
     print(

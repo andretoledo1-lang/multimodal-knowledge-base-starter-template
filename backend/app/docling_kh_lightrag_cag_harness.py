@@ -17,6 +17,7 @@ NORMALIZED_SCHEMA_VERSION = "docling_normalized_output.v1"
 CROSSWALK_SCHEMA_VERSION = "package_crosswalk.v1"
 CAG_SCHEMA_VERSION = "cag_pack_candidate.v1"
 CERTIFICATION_SCHEMA_VERSION = "p0_p8_certification.v1"
+LEGACY_ROLLOUT_PROVENANCE = "legacy_p0p8_v1"
 
 DEFAULT_ARTIFACT_ROOT = Path("logs/post-docling-p0-p8-harness")
 DEFAULT_FULL_RUN = Path("logs/docling-runs/docling-cinema-full-20260703-ptbr-resumable")
@@ -599,6 +600,7 @@ def certify_run(
 
     certification = {
         "schema_version": CERTIFICATION_SCHEMA_VERSION,
+        "rollout_provenance": LEGACY_ROLLOUT_PROVENANCE,
         "run_id": config.run_id,
         "ok": not blockers,
         "dry_run": not config.apply,

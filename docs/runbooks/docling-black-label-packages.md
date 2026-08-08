@@ -4,8 +4,10 @@ This runbook covers the package builder and staged apply harness that starts
 from a certified post-Docling P0-P8 harness run and creates Black Label
 multimodal package plans. It does not run Docling, does not call Qwen/Gemini,
 and does not write to Knowledge Hub or CAG stores. LightRAG writes are available
-only through explicit staged apply commands with preflight, ledgers, and query
-recovery.
+only through explicit staged apply commands with preflight, ledgers, query
+recovery, and service-enforced single-use fencing. The currently audited
+LightRAG adapter does not expose that fencing contract, so live apply fails
+closed before insertion.
 
 ## Safe Default
 
@@ -13,8 +15,29 @@ Run from the repository root:
 
 ```bash
 uv run --project backend python scripts/docling_black_label_package.py \
-  --source-run logs/post-docling-p0-p8-harness/post-docling-p0-p8-smoke-20260708T024207Z
+  --source-run logs/post-docling-p0-p8-harness/post-docling-p0-p8-smoke-20260708T024207Z \
+  --legacy-source-certification-hash <verified-canonical-source-hash> \
+  --legacy-source-bundle-hash <verified-composite-source-bundle-hash>
 ```
+
+Legacy authorization requires two independent operator-supplied values. The
+certification hash is the repository `stable_hash` of the parsed
+`p0-p8-certification.json`, not the byte hash of its formatting. The composite
+bundle hash binds that certification, the ordered normalized output, crosswalk,
+CAG candidates, and every referenced text artifact verified against its
+declared SHA-256. Compute both from the exact source run before supplying the
+flags:
+
+```bash
+uv run --project backend python -c \
+  'import json,sys; from pathlib import Path; sys.path.insert(0,"backend"); from app.docling_black_label_package import BlackLabelConfig,load_source_bundle,stable_hash; source=load_source_bundle(BlackLabelConfig(run_id="binding-only",source_run=Path(sys.argv[1]))); print(json.dumps({"legacy_source_certification_hash":stable_hash(source.certification),"legacy_source_bundle_hash":source.binding["source_bundle_hash"]},sort_keys=True))' \
+  logs/post-docling-p0-p8-harness/post-docling-p0-p8-smoke-20260708T024207Z
+```
+
+Both hash flags are required for explicit legacy authorization. A provenance
+marker inside the source file or the certification hash alone is insufficient,
+and neither flag can override a governed source whose controller authorization
+is not green.
 
 The command writes a new run directory under `logs/black-label-docling/` with:
 
@@ -155,28 +178,57 @@ gate_6_full_84_pdf_apply: ready_for_operator_gate
 
 ## Next Safe Apply Boundary
 
-The next LightRAG mutation gate is `full_corpus_after_certification`. It is
-implemented but remains an operator-gated broad write. Before running it,
+The next logical LightRAG mutation gate is `full_corpus_after_certification`.
+It remains a no-go in the current runtime because the insert API has no
+service-enforced single-use fencing contract. Do not run it until a reviewed
+adapter advertises the exact fencing fields, atomically rejects token replay,
+and returns a bound receipt. After that capability exists,
 refresh certification and verify `quality_bar.full_corpus_apply_allowed=true`,
 `gate_6_full_84_pdf_apply=ready_for_operator_gate`, LightRAG is idle, failed
 count is zero, and the duplicate-source index can be fetched.
 
-Use `--source-run` only for P0-P8 dry-run input. Use `--black-label-run` for
-staged apply and certification refresh:
+Use `--source-run` for the exact P0-P8 source on every build, refresh, and apply
+so authorization is derived from the current source rather than copied Black
+Label fields. Use `--black-label-run` for staged apply and certification
+refresh. Every operation against this legacy run must repeat both verified
+hashes. The Black Label certification also persists the versioned generation
+recipe used for canonical card and plan regeneration. Current runs emit recipe
+`v2`, including the evaluation threshold. Apply and refresh retain compatibility
+with prior `v1` and recipe-absent certifications by preserving the certified
+`quality_bar.target_eval_threshold`; malformed versions fail closed.
+
+For the legacy `--source-run <black-label-run>` alias, supply `--source-root`
+pointing to the parent of the certified P0-P8 runs. The alias resolves only one
+exact match for both the recorded source-certification hash and composite bundle
+hash. Missing or ambiguous matches block before client creation.
+
+Before client creation, apply checks explicit-versus-certified source identity
+and canonically regenerates the card manifest and LightRAG plan from that exact
+source in a contained temporary directory. A different authorized source cannot
+rebind an existing Black Label plan.
 
 ```bash
 uv run --project backend python scripts/docling_black_label_package.py \
   refresh-certification \
-  --black-label-run logs/black-label-docling/black-label-full-dryrun-20260708T072250Z
+  --source-run logs/post-docling-p0-p8-harness/post-docling-p0-p8-smoke-20260708T024207Z \
+  --black-label-run logs/black-label-docling/black-label-full-dryrun-20260708T072250Z \
+  --legacy-source-certification-hash <verified-canonical-source-hash> \
+  --legacy-source-bundle-hash <verified-composite-source-bundle-hash>
 
 uv run --project backend python scripts/docling_black_label_package.py \
   apply-lightrag-stage \
+  --source-run logs/post-docling-p0-p8-harness/post-docling-p0-p8-smoke-20260708T024207Z \
   --black-label-run logs/black-label-docling/black-label-full-dryrun-20260708T072250Z \
-  --lightrag-stage full_corpus_after_certification
+  --lightrag-stage full_corpus_after_certification \
+  --legacy-source-certification-hash <verified-canonical-source-hash> \
+  --legacy-source-bundle-hash <verified-composite-source-bundle-hash>
 
 uv run --project backend python scripts/docling_black_label_package.py \
   refresh-certification \
-  --black-label-run logs/black-label-docling/black-label-full-dryrun-20260708T072250Z
+  --source-run logs/post-docling-p0-p8-harness/post-docling-p0-p8-smoke-20260708T024207Z \
+  --black-label-run logs/black-label-docling/black-label-full-dryrun-20260708T072250Z \
+  --legacy-source-certification-hash <verified-canonical-source-hash> \
+  --legacy-source-bundle-hash <verified-composite-source-bundle-hash>
 ```
 
 The stage order is:

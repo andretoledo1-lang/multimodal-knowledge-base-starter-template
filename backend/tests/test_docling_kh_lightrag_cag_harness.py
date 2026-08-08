@@ -160,6 +160,18 @@ def test_run_all_certifies_complete_fixture_without_mutation(tmp_path: Path) -> 
     assert "docling_output_file" in {row["artifact_layer"] for row in normalized}
 
 
+def test_real_certification_declares_legacy_rollout_provenance_without_governed_schema(tmp_path: Path) -> None:
+    config = build_config(tmp_path)
+
+    result = subject.run_all(config)
+
+    certification = result["certification"]
+    persisted = json.loads((config.run_dir / "p0-p8-certification.json").read_text(encoding="utf-8"))
+    assert certification["rollout_provenance"] == "legacy_p0p8_v1"
+    assert "rollout_schema_version" not in certification
+    assert persisted == certification
+
+
 def test_overlay_base_only_timeout_is_preserved_as_partial(tmp_path: Path) -> None:
     config = build_config(tmp_path)
 
