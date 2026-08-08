@@ -59,6 +59,57 @@ The generated artifact set is expected to include source, rights, package, card,
 crosswalk, visual-queue, LightRAG-plan, CAG, eval, phase-ledger, certification,
 and human-report outputs. Their presence alone does not certify any gate.
 
+## HyperFrames v2 Evidence Workflow
+
+This is a prospective, read-only P0 workflow. It does not change the current
+Seedance gate state, certify a completed HyperFrames run, or authorize P1.
+
+1. **Run Phase 0 value preflight.** Freeze the four palette-selection
+   questions and the existing-corpus baseline before corpus-specific work. Stop
+   before authority engineering when fewer than two questions expose a real
+   retrieval gap. Phase 0 makes no provider calls and authorizes no paid budget.
+2. **Freeze the subject.** Review, test, and commit the executable
+   implementation and its exact executable-tree digest before collecting live
+   evidence. Later evidence must bind to that immutable `subject_revision`.
+3. **Generate origin and authority evidence.** Observe the allowlisted official
+   HyperFrames origin read-only, verify the pinned commit-to-tree-to-blob
+   closure, license bytes, `NOTICE` result, and all nine source bindings, then
+   apply the subject-bound license-coverage policy. Generated evidence cannot
+   replace the trust roots or self-approve a source.
+4. **Run the generic negative capability audit.** Produce the version 2
+   LightRAG and Knowledge Hub audit from one stable service epoch. This slice
+   may record only `discovered` or `observed` negative evidence; it must reject
+   a client-declared `available` or `deployment_bound` result. Missing epoch or
+   owning-service attestation remains `no_go`.
+5. **Publish one complete evidence generation.** Materialize the Phase 0
+   baseline, holdout, origin observation, license, authority, per-source rights,
+   and capability evidence first. Write the corpus policy last as the completion
+   record that hash-binds the exact generation; missing, extra, stale, or mixed
+   inputs block the run.
+6. **Create two immutable dry-runs.** Use distinct run IDs and roots over the
+   same subject, policy, source inventory, and evidence generation. Never edit
+   or normalize either run directory in place, and preserve the first run's raw
+   byte hashes across the comparison.
+7. **Apply the canonical comparison.** Require exactly the 17 basenames defined
+   by `backend/app/governed_run_determinism.py`; missing, extra, symlinked, or
+   non-regular members fail. Normalize only `/run_id` and `/source_run` in
+   `black-label-certification.json`, `/run_id` in
+   `p0-p8-certification.json` and `phase-ledger.json`, and the exact report
+   run-ID line. Preserve JSONL row order, canonicalize JSON with sorted keys and
+   compact ASCII-safe encoding, hash each artifact with SHA-256, and aggregate
+   the sorted basename-to-hash map with `p0p8.stable_hash()`.
+
+The subject commit owns executable behavior. A later carrier may add only the
+allowlisted non-executable policy, evidence, report, and runbook paths; its SHA
+belongs in the external post-commit delivery envelope. Create and reconcile the
+next sequential snapshot only from the canonical workspace after carrier
+delivery—never by rewriting this worktree's stale snapshot chain.
+
+Rights eligibility, a green local value result, or equal dry-run digests do not
+open P1. LightRAG mutation and Knowledge Hub promotion remain fail-closed until
+their owning services provide the required deployment-bound, single-use, and
+atomicity guarantees through separately reviewed authorization.
+
 ## Shared Agent And Operator CLI
 
 Agents and operators use the same CLI contract; there is no hidden UI-only
