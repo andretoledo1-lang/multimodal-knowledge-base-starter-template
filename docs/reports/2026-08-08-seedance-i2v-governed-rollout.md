@@ -272,11 +272,11 @@ evidence. They must not be inferred from this scaffold:
 | Frontend verification | `pnpm typecheck` and `pnpm build` passed |
 | Browser gate | Not executed: no web files/routes changed and `agent-browser` is unavailable |
 | Multi-agent review | Security, correctness, and simplicity reviewers all returned clear |
-| Executed commit SHA | `PENDING_ORCHESTRATOR` |
-| Pull request | `PENDING_ORCHESTRATOR` |
-| CI result | `PENDING_ORCHESTRATOR` |
-| Evidence commit | `PENDING` |
-| Final snapshot | `PENDING` |
+| Executed commit SHA | `a45d669be203b394997a85207c494ba57a9e86e7` |
+| Pull request | Draft PR [#4](https://github.com/madebyagents/multimodal-knowledge-base-starter-template/pull/4), open against `main` and stacked on draft PR #3 |
+| CI result | No remote checks reported for the branch at finalization time |
+| Evidence commit | `docs: finalize governed rollout delivery evidence` on the same branch |
+| Final snapshot | `snapshots/DEEP_MEMORY_DANTEDASH_035.md` |
 
 ## Rollback Boundary And Next Safe Step
 
