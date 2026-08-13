@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 
 from app.kb_backends import KbBackendUnavailable
+from app.kb import SearchResult
+from app.providers import ProviderError
+from app.rag import GroundedAnswer
 from app.routes import chat as chat_module
 from app.routes.chat import _stream
 from app.schemas import ChatRequest
@@ -66,3 +69,43 @@ def test_no_result_thread_persists_exact_emitted_answer(tmp_path) -> None:
     emitted = json.loads(frames[0].split("data: ", 1)[1])
     detail = store.get_thread_detail(thread["id"])
     assert detail["messages"][-1]["content"] == emitted
+
+
+def test_provider_error_records_overlay_and_grounded_success_clears_it(tmp_path, monkeypatch) -> None:
+    recorded: list[tuple[str, str]] = []
+    cleared: list[str] = []
+    monkeypatch.setattr(chat_module, "record_runtime_failure", lambda model, cause: recorded.append((model, cause)))
+    monkeypatch.setattr(chat_module, "clear_runtime_failure", cleared.append)
+
+    def provider_failure(*_args, **_kwargs):
+        raise ProviderError("private upstream detail", cause="rate_limited")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(chat_module, "answer_with_vision", provider_failure)
+    failure_frames = list(
+        _stream(EmptyKb(), ChatRequest(question="fail"), ChatStore(tmp_path / "chat.sqlite"))
+    )
+
+    assert recorded == [("deepseek-v4-pro", "rate_limited")]
+    assert "rate_limited" in "".join(failure_frames)
+    assert cleared == []
+
+    def grounded_success(*_args, **_kwargs):
+        yield GroundedAnswer(
+            answer="Grounded answer [1].",
+            sources=[
+                SearchResult(
+                    node_id="node-a",
+                    score=0.9,
+                    modality="text",
+                    metadata={"id": "source-a"},
+                    snippet="source text",
+                )
+            ],
+            visual_attachments=0,
+        )
+
+    monkeypatch.setattr(chat_module, "answer_with_vision", grounded_success)
+    list(_stream(EmptyKb(), ChatRequest(question="ok"), ChatStore(tmp_path / "chat-ok.sqlite")))
+
+    assert cleared == ["deepseek-v4-pro"]

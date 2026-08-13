@@ -5,6 +5,7 @@ import threading
 from dataclasses import replace
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -132,6 +133,28 @@ def test_malformed_deepseek_model_metadata_fails_probe_closed(monkeypatch) -> No
 
     assert deepseek["available"] is False
     assert deepseek["cause"] == "verification_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected_cause"),
+    [
+        (401, "auth_required"),
+        (402, "billing_required"),
+        (404, "model_unavailable"),
+        (429, "rate_limited"),
+        (503, "integration_error"),
+    ],
+)
+def test_deepseek_probe_classifies_http_failures(status_code: int, expected_cause: str) -> None:
+    service = ProviderReadinessService(
+        _config(),
+        http_get=lambda *_args, **_kwargs: httpx.Response(status_code),
+    )
+
+    probe = service._probe_deepseek("2026-08-13T00:00:00+00:00")
+
+    assert probe.selectable is False
+    assert probe.cause == expected_cause
 
 
 def test_runtime_failure_overlay_is_redacted_and_clearable(monkeypatch) -> None:

@@ -95,6 +95,7 @@ describe("ChatPanel provider readiness", () => {
     cleanup();
     window.localStorage.clear();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("keeps an unavailable stored selection visible and blocks send until explicit choice", async () => {
@@ -170,5 +171,37 @@ describe("ChatPanel provider readiness", () => {
     expect(
       screen.queryByRole("button", { name: /Refresh provider status/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("sends the exact explicitly selected model without fallback", async () => {
+    vi.spyOn(api, "chatProviders").mockResolvedValue(providerPayload(true));
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode("event: done\ndata: {}\n\n"),
+          );
+          controller.close();
+        },
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<ChatPanel workspace={workspace("deepseek-v4-pro")} />);
+
+    const modelSelect = await screen.findByRole("combobox", { name: /model/i });
+    await user.selectOptions(modelSelect, "codex-gpt-5.5-oauth");
+    await user.type(screen.getByPlaceholderText("Ask a question..."), "Use Codex");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      question: "Use Codex",
+      chat_model: "codex-gpt-5.5-oauth",
+      project_id: "project-1",
+      thread_id: "thread-1",
+    });
   });
 });
