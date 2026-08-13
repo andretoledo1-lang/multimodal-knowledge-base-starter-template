@@ -13,6 +13,20 @@ Recover DanteDash text-to-visual and image retrieval without resetting the share
 
 ---
 
+## Execution Amendment — 2026-08-13
+
+The adversarial implementation review rejected the proposed live recovery executor. A process-local lease and an unbound snapshot receipt cannot prove crash-safe writer exclusion, replay, or exact rollback, and the current Chroma store has no direct provenance receipt binding its database digest, complete node-ID set, and vector digest to the historical Voyage run. The incident repair therefore ships only the fail-closed subset in this iteration:
+
+- remove shared-collection reset behavior and block candidate writes that lack durable promotion;
+- expose authenticated read-only drift evidence and manifest/vector ID parity without declaring content readiness;
+- produce an owner-private dry-run inventory that labels Qdrant rows and Stage B payload evidence as unverified;
+- fix no-result chat streaming and truthful provider readiness/UI;
+- make no live Qdrant recovery writes and make no zero-write replay claim.
+
+Requirements R2–R6, R10, R19, R21, and R22 remain rollout gates rather than completed implementation. Live restoration requires a separately reviewed durable run ledger, restart-safe writer fencing, externally persisted snapshot receipt, direct vector provenance receipt (or separately budget-authorized re-embedding), exact content comparison, and an independently verified rollback path. Until those exist, the served Dante vector count remains degraded and recovery execution is intentionally unavailable.
+
+---
+
 ## Problem Frame
 
 The live Dante package manifest reports 8,497 assets while the active Qdrant visual collection contains 1,757 points and zero points with `kb_slug=dantedash`. Text and image package searches therefore return successful but empty responses. A normal visual sync and the candidate backfill both call `reset_collection` on a collection shared by multiple producers, then repopulate only physically discovered assets; this preserves the foreign Dante manifest but deletes its synthetic vectors.
@@ -81,7 +95,7 @@ The dashboard compounds the data failure in two places. A final no-results `Grou
 - `scripts/dantedash_kh_import_missing.py` already imports with `reset_collection=false` and batches through the KH-owned API, while `backend/app/docling_black_label_qwen_visual_next100_apply.py` contains certified materialization rules for the newest reviewed corpus.
 - Current disk evidence: the manifest has 8,497 unique node IDs; local Chroma has 8,099 IDs, all overlapping the manifest; 398 manifest nodes are not in Chroma and consist of 192 extracted images, 101 page packages, and 105 reviewed visual cards.
 - Chroma family evidence is indirect but specific: all current rows are 1,024-dimensional; `backend/app/kb.py` changed from the incompatible 768-dimensional Gemini preview to fixed `voyage-multimodal-3.5`/1,024 at commit `a933ab8`; and `snapshots/DEEP_MEMORY_DANTEDASH_003.md` records the Voyage provider/model contract. U3 must turn this chain plus the database and row digests into an explicit provenance receipt before reuse; dimension alone is not sufficient.
-- Current provider evidence: DeepSeek reports available with a positive balance and a real minimal completion succeeds; Codex is logged in through ChatGPT OAuth and a bounded `gpt-5.5` probe succeeds; Claude reports `loggedIn=false`; GitHub authenticates the intended account.
+- Current provider evidence: DeepSeek reports available with a positive balance and a real minimal completion succeeds; Codex is logged in through ChatGPT OAuth and a bounded `gpt-5.5` probe succeeds; Claude reports `loggedIn=false`; the stored GitHub credential is invalid and the user-visible device flow currently fails with HTTP 503 after code entry.
 - Historical incident evidence in `snapshots/DEEP_MEMORY_DANTEDASH_008.md` shows that foreign-manifest ownership already failed once. The previous fix protected JSON only, so the new regression test must cover import followed by normal visual sync.
 
 ---
