@@ -79,27 +79,6 @@ def audit_payload(module, manifest_file: Path, assets, *, actual_ids=()):
     }
 
 
-def direct_provenance_receipt(module, rows, *, database_digest: str = "d" * 64):
-    ordered = sorted(rows, key=lambda row: row["node_id"])
-    vector_rows = []
-    for row in ordered:
-        vector = [float(value) for value in row["embedding"]]
-        packed = struct.pack(f">{len(vector)}f", *vector)
-        vector_rows.append(
-            {
-                "node_id": row["node_id"],
-                "sha256": hashlib.sha256(packed).hexdigest(),
-            }
-        )
-    return {
-        "evidence_strength": "direct_vector_provenance_receipt",
-        "database_digest": database_digest,
-        "expected_row_count": len(ordered),
-        "node_id_digest": module.canonical_digest([row["node_id"] for row in ordered]),
-        "vector_digest": module.canonical_digest(vector_rows),
-    }
-
-
 def test_dantedash_point_id_matches_kh_uuid5_contract() -> None:
     module = load_module()
 
@@ -189,7 +168,7 @@ def test_fetch_audit_refuses_missing_bearer_or_non_loopback() -> None:
         module.fetch_audit("https://kh.example", actions_bearer_token="secret-token")
 
 
-def test_build_stage_a_binds_rows_documents_payloads_vectors_and_evidence() -> None:
+def test_build_stage_a_binds_rows_but_remains_blocked_without_direct_receipt() -> None:
     module = load_module()
     manifest = [asset("node-a")]
     source_rows = [
@@ -206,10 +185,11 @@ def test_build_stage_a_binds_rows_documents_payloads_vectors_and_evidence() -> N
         collection,
         manifest,
         database_digest="d" * 64,
-        historical_evidence=direct_provenance_receipt(module, source_rows),
+        historical_evidence={"evidence_strength": "indirect_specific_workspace_chain"},
     )
 
-    assert receipt.status == "certified"
+    assert receipt.status == "blocked"
+    assert receipt.blockers == ("chroma_vector_provenance_unverified",)
     assert receipt.row_count == 1
     assert receipt.dimension == 1024
     assert all(len(value) == 64 for value in (receipt.row_digest, receipt.payload_digest, receipt.vector_digest))
@@ -228,13 +208,12 @@ def test_build_stage_a_fails_closed_on_wrong_dimension() -> None:
         collection,
         [asset("node-a")],
         database_digest="d" * 64,
-        historical_evidence=direct_provenance_receipt(module, source_rows),
+        historical_evidence={"evidence_strength": "indirect_specific_workspace_chain"},
     )
 
     assert receipt.status == "blocked"
     assert rows == []
     assert "chroma_vector_contract_mismatch:node-a" in receipt.blockers
-    assert "chroma_expected_row_count_mismatch" in receipt.blockers
 
 
 def test_build_stage_a_does_not_certify_indirect_provider_evidence() -> None:
@@ -254,34 +233,6 @@ def test_build_stage_a_does_not_certify_indirect_provider_evidence() -> None:
     assert receipt.row_count == 1
     assert len(rows) == 1
     assert receipt.blockers == ("chroma_vector_provenance_unverified",)
-
-
-@pytest.mark.parametrize(
-    ("field", "value", "expected_blocker"),
-    [
-        ("database_digest", "e" * 64, "chroma_database_digest_mismatch"),
-        ("expected_row_count", 2, "chroma_expected_row_count_mismatch"),
-        ("node_id_digest", "e" * 64, "chroma_node_id_digest_mismatch"),
-        ("vector_digest", "e" * 64, "chroma_vector_digest_mismatch"),
-    ],
-)
-def test_build_stage_a_requires_exact_direct_receipt_bindings(field, value, expected_blocker) -> None:
-    module = load_module()
-    source_rows = [
-        {"node_id": "node-a", "document": "alpha", "metadata": {}, "embedding": [0.25] * 1024}
-    ]
-    evidence = direct_provenance_receipt(module, source_rows)
-    evidence[field] = value
-
-    receipt, _rows = module.build_stage_a(
-        FakeCollection(source_rows),
-        [asset("node-a")],
-        database_digest="d" * 64,
-        historical_evidence=evidence,
-    )
-
-    assert receipt.status == "blocked"
-    assert expected_blocker in receipt.blockers
 
 
 def test_stage_b_builds_complete_no_provider_inventory(tmp_path: Path) -> None:
@@ -409,11 +360,10 @@ def test_audit_dry_run_writes_one_owner_only_immutable_summary_without_mutation(
     source_rows = [{"node_id": "node-a", "document": "alpha", "metadata": {}, "embedding": [0.5] * 1024}]
     collection = FakeCollection(source_rows)
     monkeypatch.setattr(module, "_open_chroma_collection", lambda *_args: collection)
-    database_digest = module.digest_file_tree(chroma_dir)
     monkeypatch.setattr(
         module,
         "validate_historical_evidence",
-        lambda *_args: direct_provenance_receipt(module, source_rows, database_digest=database_digest),
+        lambda *_args: {"evidence_strength": "indirect_specific_workspace_chain"},
     )
     monkeypatch.setattr(module, "DEFAULT_RECOVERY_ROOT", tmp_path / "runs")
     parser = module.build_parser()
@@ -449,7 +399,8 @@ def test_audit_dry_run_writes_one_owner_only_immutable_summary_without_mutation(
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     digest = summary.pop("audit_digest")
     assert digest == module.canonical_digest(summary)
-    assert summary["stage_a"]["status"] == "certified"
+    assert summary["stage_a"]["status"] == "blocked"
+    assert "chroma_vector_provenance_unverified" in summary["stage_a"]["blockers"]
     assert summary["stage_b"]["row_count"] == 0
     assert summary["baseline"]["content_exactness"] == "unverified"
     stage_a_row = summary["evidence"]["stage_a_rows"][0]

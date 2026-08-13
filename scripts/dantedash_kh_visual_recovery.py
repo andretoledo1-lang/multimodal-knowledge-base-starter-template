@@ -345,9 +345,7 @@ def build_stage_a(
 ) -> tuple[StageAReceipt, list[dict[str, Any]]]:
     manifest_by_id = {str(item["node_id"]): item for item in manifest_assets}
     rows: list[dict[str, Any]] = []
-    blockers: list[str] = []
-    if historical_evidence.get("evidence_strength") != "direct_vector_provenance_receipt":
-        blockers.append("chroma_vector_provenance_unverified")
+    blockers: list[str] = ["chroma_vector_provenance_unverified"]
     collection_count = int(collection.count())
     offset = 0
     page_size = 128
@@ -428,22 +426,8 @@ def build_stage_a(
     vector_digest = canonical_digest(
         [{"node_id": row["node_id"], "sha256": row["vector_sha256"]} for row in rows]
     )
-    if historical_evidence.get("evidence_strength") == "direct_vector_provenance_receipt":
-        if historical_evidence.get("database_digest") != database_digest:
-            blockers.append("chroma_database_digest_mismatch")
-        expected_row_count = historical_evidence.get("expected_row_count")
-        if (
-            isinstance(expected_row_count, bool)
-            or not isinstance(expected_row_count, int)
-            or expected_row_count != len(rows)
-        ):
-            blockers.append("chroma_expected_row_count_mismatch")
-        if historical_evidence.get("node_id_digest") != node_id_digest:
-            blockers.append("chroma_node_id_digest_mismatch")
-        if historical_evidence.get("vector_digest") != vector_digest:
-            blockers.append("chroma_vector_digest_mismatch")
     receipt = StageAReceipt(
-        status="certified" if not blockers else "blocked",
+        status="blocked",
         row_count=len(rows),
         database_digest=database_digest,
         node_id_digest=node_id_digest,
