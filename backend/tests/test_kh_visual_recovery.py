@@ -129,6 +129,20 @@ def test_parse_audit_requires_actual_vector_ids_for_nonempty_scope(tmp_path: Pat
         module.parse_audit(payload, ["node-a"])
 
 
+def test_parse_audit_accepts_unready_zero_vector_contract(tmp_path: Path) -> None:
+    module = load_module()
+    assets = [asset("node-a")]
+    manifest = tmp_path / "dantedash.json"
+    manifest.write_text(json.dumps({"assets": assets}), encoding="utf-8")
+    payload = audit_payload(module, manifest, assets)
+    payload["status"] = "unready"
+
+    audit = module.parse_audit(payload, ["node-a"])
+
+    assert audit.vector_count == 0
+    assert audit.actual_ids == ()
+
+
 def test_fetch_audit_disables_environment_proxy_routing(monkeypatch) -> None:
     module = load_module()
     captured: dict[str, object] = {}

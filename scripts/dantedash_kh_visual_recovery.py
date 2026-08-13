@@ -169,7 +169,7 @@ def parse_audit(raw: Mapping[str, Any], manifest_ids: Sequence[str]) -> AuditEvi
     if not isinstance(data, Mapping):
         raise RecoveryError("audit_response_invalid")
     status = str(data.get("status") or "").lower()
-    if status not in {"ok", "ready", "degraded", "searchable_degraded"}:
+    if status not in {"ok", "ready", "unready", "degraded", "searchable_degraded"}:
         raise RecoveryError("audit_status_unavailable")
     drift = data.get("drift") if isinstance(data.get("drift"), Mapping) else {}
     actual_raw = data.get("dantedash_point_ids")

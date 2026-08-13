@@ -222,6 +222,8 @@ class ProviderReadinessService:
             if models.status_code >= 400:
                 return self._http_failure(models, checked_at)
             model_payload = models.json()
+            if not isinstance(model_payload, dict) or not isinstance(model_payload.get("data"), list):
+                return self._unavailable("verification_unavailable", checked_at)
             model_ids = {
                 row.get("id")
                 for row in model_payload.get("data", [])

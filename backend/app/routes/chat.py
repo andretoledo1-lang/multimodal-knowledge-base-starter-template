@@ -127,7 +127,8 @@ def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
                 chat_model=req.chat_model,
                 top_k=req.top_k,
             )
-        clear_runtime_failure(req.chat_model)
+        if final.sources:
+            clear_runtime_failure(req.chat_model)
 
     logger.info(
         "chat q=%r thread=%s user_msg=%s tokens=%d sources=%d visuals=%d",

@@ -116,6 +116,24 @@ def test_provider_families_are_probed_concurrently(monkeypatch) -> None:
     assert payload["status"] == "verified"
 
 
+def test_malformed_deepseek_model_metadata_fails_probe_closed(monkeypatch) -> None:
+    def malformed_http_get(url: str, **_kwargs) -> httpx.Response:
+        if url.endswith("/user/balance"):
+            return httpx.Response(200, json={"is_available": True})
+        return httpx.Response(200, json=[{"id": "deepseek-v4-pro"}])
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 0, stdout="Logged in", stderr=""),
+    )
+    payload = ProviderReadinessService(_config(), http_get=malformed_http_get).status_payload()
+    deepseek = next(row for row in payload["providers"] if row["provider_family"] == "deepseek")
+
+    assert deepseek["available"] is False
+    assert deepseek["cause"] == "verification_unavailable"
+
+
 def test_runtime_failure_overlay_is_redacted_and_clearable(monkeypatch) -> None:
     monkeypatch.setattr(
         subprocess,

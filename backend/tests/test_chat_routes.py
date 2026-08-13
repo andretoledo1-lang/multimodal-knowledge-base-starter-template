@@ -48,7 +48,7 @@ def test_no_result_answer_is_emitted_before_sources_and_done(
     assert "event: sources" in frames[1]
     assert '"sources": []' in frames[1]
     assert frames[2] == "event: done\ndata: {}\n\n"
-    assert cleared == ["deepseek-v4-pro"]
+    assert cleared == []
 
 
 def test_no_result_thread_persists_exact_emitted_answer(tmp_path) -> None:
