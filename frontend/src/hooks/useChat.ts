@@ -56,6 +56,7 @@ interface UseChatOptions {
   projectId?: string | null;
   threadId?: string | null;
   onCompleted?: () => void;
+  onProviderFailure?: (cause: string | null) => void;
 }
 
 interface SourcesPayload {
@@ -75,10 +76,15 @@ export function useChat(options: UseChatOptions = {}) {
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const onCompletedRef = useRef(options.onCompleted);
+  const onProviderFailureRef = useRef(options.onProviderFailure);
 
   useEffect(() => {
     onCompletedRef.current = options.onCompleted;
   }, [options.onCompleted]);
+
+  useEffect(() => {
+    onProviderFailureRef.current = options.onProviderFailure;
+  }, [options.onProviderFailure]);
 
   useEffect(() => {
     if (!options.initialMessages || isStreaming) return;
@@ -174,16 +180,27 @@ export function useChat(options: UseChatOptions = {}) {
           }));
         } else if (frame.event === "done") {
           completed = true;
-          updateAssistant((m) => ({ ...m, streaming: false }));
+          updateAssistant((m) => ({
+            ...m,
+            content:
+              m.content || m.error
+                ? m.content
+                : "Chat completed without an answer. Please retry.",
+            streaming: false,
+          }));
         } else if (frame.event === "error") {
           hasStreamError = true;
-          const payload = safeJsonParse<{ message?: string }>(frame.data, {});
+          const payload = safeJsonParse<{ message?: string; cause?: string }>(
+            frame.data,
+            {},
+          );
           const msg = payload.message ?? "Stream error";
           updateAssistant((m) => ({
             ...m,
             streaming: false,
             error: msg,
           }));
+          onProviderFailureRef.current?.(payload.cause ?? null);
           toast.error(`Chat error: ${msg}`);
         }
       }

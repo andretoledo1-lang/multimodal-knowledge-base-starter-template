@@ -15,7 +15,8 @@
     "electron:package:local": "scripts/build-electron-app.sh",
     "electron:build": "pnpm build && pnpm electron:package:local",
     "preview": "pnpm --filter frontend preview",
-    "typecheck": "pnpm --filter frontend typecheck"
+    "typecheck": "pnpm --filter frontend typecheck",
+    "test": "pnpm --filter frontend test"
   },
   "devDependencies": {
     "electron": "42.4.0"

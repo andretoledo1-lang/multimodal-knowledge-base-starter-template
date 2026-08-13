@@ -251,6 +251,36 @@ export interface WorkspaceBootstrapResponse {
   thread: ChatThread;
 }
 
+export type ProviderReadinessState =
+  | "ready"
+  | "authenticated_unverified"
+  | "unavailable";
+
+export interface ProviderCheck {
+  state: string;
+  checked_at: string | null;
+}
+
+export interface ProviderStatus {
+  model_id: string;
+  label: string;
+  provider_family: string;
+  state: ProviderReadinessState;
+  available: boolean;
+  cause: string;
+  retryable: boolean;
+  recovery_hint: string;
+  auth: ProviderCheck;
+  capacity: ProviderCheck;
+  last_smoke: ProviderCheck;
+}
+
+export interface ProviderStatusResponse {
+  status: "verified";
+  checked_at: string;
+  providers: ProviderStatus[];
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -285,6 +315,13 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  async chatProviders(args?: {
+    refresh?: boolean;
+  }): Promise<ProviderStatusResponse> {
+    const query = args?.refresh ? "?refresh=true" : "";
+    return jsonOrThrow(await fetch(`/api/chat/providers${query}`));
+  },
+
   async bootstrapWorkspace(): Promise<WorkspaceBootstrapResponse> {
     return jsonOrThrow(
       await fetch("/api/workspace/bootstrap", { method: "POST" }),

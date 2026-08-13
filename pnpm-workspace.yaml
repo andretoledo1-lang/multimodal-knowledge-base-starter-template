@@ -41,4 +41,5 @@ autoInstallPeers: true
 # dependency we don't use; its postinstall (service-worker setup) is not needed.
 allowBuilds:
   electron: true
+  esbuild: true
   msw: false

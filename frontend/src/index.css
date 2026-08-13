@@ -513,6 +513,19 @@
     color: #a8adb4;
   }
 
+  .chat-provider-status {
+    color: #aeb4bd;
+  }
+
+  .chat-provider-refresh {
+    color: #c9d0da;
+  }
+
+  .chat-provider-refresh:hover:not(:disabled) {
+    background: #343940 !important;
+    color: #f2f3f5 !important;
+  }
+
   .chat-model-control .chat-model-select,
   .chat-topk-control .chat-topk-select {
     border-color: transparent !important;

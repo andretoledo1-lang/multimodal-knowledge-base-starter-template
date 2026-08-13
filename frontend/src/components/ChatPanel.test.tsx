@@ -1,0 +1,133 @@
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { ChatPanel } from "@/components/ChatPanel";
+import type { ChatWorkspace } from "@/hooks/useChatWorkspace";
+import { api, type ProviderStatusResponse } from "@/lib/api";
+
+function providerPayload(
+  claudeAvailable: boolean,
+): ProviderStatusResponse {
+  const checkedAt = "2026-08-13T00:00:00+00:00";
+  const check = (state: string) => ({ state, checked_at: checkedAt });
+  return {
+    status: "verified",
+    checked_at: checkedAt,
+    providers: [
+      {
+        model_id: "deepseek-v4-pro",
+        label: "deepseek - deepseek-v4-pro",
+        provider_family: "deepseek",
+        state: "ready",
+        available: true,
+        cause: "ready",
+        retryable: false,
+        recovery_hint: "Provider is ready.",
+        auth: check("authenticated"),
+        capacity: check("available"),
+        last_smoke: { state: "not_run", checked_at: null },
+      },
+      {
+        model_id: "codex-gpt-5.5-oauth",
+        label: "openai/codex - gpt-5.5 OAuth",
+        provider_family: "openai_codex",
+        state: "authenticated_unverified",
+        available: true,
+        cause: "capacity_unverified",
+        retryable: false,
+        recovery_hint: "Authentication is valid, but execution capacity has not been smoke-tested.",
+        auth: check("authenticated"),
+        capacity: check("unknown"),
+        last_smoke: { state: "not_run", checked_at: null },
+      },
+      ...["claude-sonnet-4-6-oauth", "claude-opus-4-8-oauth"].map(
+        (modelId) => ({
+          model_id: modelId,
+          label:
+            modelId === "claude-sonnet-4-6-oauth"
+              ? "claude - sonnet-4.6 OAuth"
+              : "claude - opus-4.8 OAuth Premium",
+          provider_family: "anthropic",
+          state: claudeAvailable
+            ? ("authenticated_unverified" as const)
+            : ("unavailable" as const),
+          available: claudeAvailable,
+          cause: claudeAvailable ? "capacity_unverified" : "auth_required",
+          retryable: !claudeAvailable,
+          recovery_hint: claudeAvailable
+            ? "Authentication is valid, but execution capacity has not been smoke-tested."
+            : "Sign in to this provider, then refresh provider status.",
+          auth: check(claudeAvailable ? "authenticated" : "unauthenticated"),
+          capacity: check("unknown"),
+          last_smoke: { state: "not_run", checked_at: null },
+        }),
+      ),
+    ],
+  };
+}
+
+function workspace(model = "claude-sonnet-4-6-oauth") {
+  return {
+    selectedProjectId: "project-1",
+    selectedThreadId: "thread-1",
+    selectedThread: {
+      id: "thread-1",
+      title: "Provider test",
+      chat_model: model,
+      top_k: 5,
+    },
+    threadDetail: null,
+    isCreatingThread: false,
+    refreshThread: vi.fn(),
+    createThread: vi.fn(),
+  } as unknown as ChatWorkspace;
+}
+
+describe("ChatPanel provider readiness", () => {
+  afterEach(() => {
+    cleanup();
+    window.localStorage.clear();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps an unavailable stored selection visible and blocks send until explicit choice", async () => {
+    vi.spyOn(api, "chatProviders").mockResolvedValue(providerPayload(false));
+    const user = userEvent.setup();
+    render(<ChatPanel workspace={workspace()} />);
+
+    const modelSelect = await screen.findByRole("combobox", { name: /model/i });
+    await waitFor(() =>
+      expect(modelSelect).toHaveValue("claude-sonnet-4-6-oauth"),
+    );
+    expect(
+      screen.getByText(/claude - sonnet-4.6 OAuth: unavailable/i),
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText("Ask a question..."), "Hello");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+
+    await user.selectOptions(modelSelect, "deepseek-v4-pro");
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+  });
+
+  it("shows verification errors and offers an explicit refresh", async () => {
+    vi.spyOn(api, "chatProviders")
+      .mockRejectedValueOnce(new Error("network unavailable"))
+      .mockResolvedValueOnce(providerPayload(true));
+    const user = userEvent.setup();
+    render(<ChatPanel workspace={workspace()} />);
+
+    expect(
+      await screen.findByText(/Provider verification failed/i),
+    ).toBeInTheDocument();
+    const refresh = screen.getByRole("button", {
+      name: /Refresh provider status/i,
+    });
+    await user.click(refresh);
+
+    expect(
+      await screen.findByText(/authenticated; execution capacity is not smoke-tested/i),
+    ).toBeInTheDocument();
+  });
+});

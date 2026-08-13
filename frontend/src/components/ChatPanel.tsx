@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -13,6 +14,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   RotateCcw,
+  RefreshCw,
   Send,
   Square,
   User,
@@ -36,7 +38,13 @@ import {
   type ChatModelId,
 } from "@/hooks/useChat";
 import type { ChatWorkspace } from "@/hooks/useChatWorkspace";
-import type { PersistedChatMessage, SearchResult } from "@/lib/api";
+import {
+  api,
+  apiErrorMessage,
+  type PersistedChatMessage,
+  type ProviderStatus,
+  type SearchResult,
+} from "@/lib/api";
 import { formatSourceLocation } from "@/lib/utils";
 
 const CONTEXT_WIDTH_KEY = "dante-dashboard-context-width";
@@ -44,10 +52,12 @@ const CONTEXT_OPEN_KEY = "dante-dashboard-context-open";
 const CHAT_MODEL_KEY = "dante-dashboard-chat-model";
 const CHAT_TOP_K_KEY = "dante-dashboard-chat-top-k";
 const CHAT_TOP_K_OPTIONS = [3, 5, 8, 12] as const;
+const PROVIDER_STATUS_ID = "chat-provider-status";
 
 type ChatTopK = (typeof CHAT_TOP_K_OPTIONS)[number];
 type ContextScope = "all" | "latest";
 type ContextSourceFilter = "all" | "visual";
+type ProviderLoadState = "checking" | "verified" | "verification_error";
 
 interface SourceCluster {
   key: string;
@@ -262,9 +272,9 @@ function Bubble({
           )
         ) : message.role === "assistant" && message.streaming ? (
           <span className="inline-flex items-center gap-1.5 text-muted-foreground">
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.3s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current [animation-delay:-0.15s]" />
-            <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current" />
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:-0.3s]" />
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current [animation-delay:-0.15s]" />
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
           </span>
         ) : null}
 
@@ -586,6 +596,12 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
   const [contextScope, setContextScope] = useState<ContextScope>("all");
   const [contextSourceFilter, setContextSourceFilter] =
     useState<ContextSourceFilter>("all");
+  const [providerLoadState, setProviderLoadState] =
+    useState<ProviderLoadState>("checking");
+  const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>(
+    [],
+  );
+  const [providerVerificationError, setProviderVerificationError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const [previewItem, setPreviewItem] = useState<PreviewDialogItem | null>(
     null,
@@ -598,12 +614,37 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
     () => activeThreadDetail?.messages.map(persistedToChatMessage) ?? [],
     [activeThreadDetail],
   );
+  const loadProviderStatus = useCallback(async (refresh = false) => {
+    setProviderLoadState("checking");
+    setProviderVerificationError("");
+    try {
+      const payload = await api.chatProviders({ refresh });
+      setProviderStatuses(payload.providers);
+      setProviderLoadState("verified");
+    } catch (error) {
+      setProviderVerificationError(apiErrorMessage(error));
+      setProviderLoadState("verification_error");
+    }
+  }, []);
   const { messages, isStreaming, send, reset, stop } = useChat({
     initialMessages: persistedMessages,
     projectId: workspace.selectedProjectId,
     threadId: workspace.selectedThreadId,
     onCompleted: workspace.refreshThread,
+    onProviderFailure: () => {
+      void loadProviderStatus(true);
+    },
   });
+  const providerStatusByModel = useMemo(
+    () => new Map(providerStatuses.map((status) => [status.model_id, status])),
+    [providerStatuses],
+  );
+  const selectedProviderStatus = providerStatusByModel.get(chatModel);
+  const selectedProviderAvailable =
+    providerLoadState === "verified" && selectedProviderStatus?.available === true;
+  const hasUnavailableProvider = providerStatuses.some(
+    (status) => !status.available,
+  );
   const contextGroups = useMemo(
     () => collectAssistantContextGroups(messages),
     [messages],
@@ -614,6 +655,10 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
   useEffect(() => {
     window.localStorage.setItem(CHAT_MODEL_KEY, chatModel);
   }, [chatModel]);
+
+  useEffect(() => {
+    void loadProviderStatus();
+  }, [loadProviderStatus]);
 
   useEffect(() => {
     const savedModel = workspace.selectedThread?.chat_model;
@@ -656,7 +701,13 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
 
   const submit = () => {
     const q = draft.trim();
-    if (!q || isStreaming || !workspace.selectedThreadId) return;
+    if (
+      !q ||
+      isStreaming ||
+      !workspace.selectedThreadId ||
+      !selectedProviderAvailable
+    )
+      return;
     setDraft("");
     void send(q, {
       model: chatModel,
@@ -791,6 +842,7 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={onKeyDown}
                 placeholder="Ask a question..."
+                aria-describedby={PROVIDER_STATUS_ID}
                 rows={1}
                 className="chat-panel-input max-h-40 min-h-10 resize-none border-0 bg-transparent py-2 leading-5 shadow-none field-sizing-content focus-visible:ring-0 focus-visible:ring-offset-0"
               />
@@ -809,7 +861,9 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
                   onClick={submit}
                   className="chat-send-button shrink-0"
                   disabled={
-                    draft.trim().length === 0 || !workspace.selectedThreadId
+                    draft.trim().length === 0 ||
+                    !workspace.selectedThreadId ||
+                    !selectedProviderAvailable
                   }
                   aria-label="Send"
                 >
@@ -831,13 +885,25 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
                     setChatModel(event.target.value as ChatModelId)
                   }
                   disabled={isStreaming}
+                  aria-describedby={PROVIDER_STATUS_ID}
                   className="chat-model-select h-7 min-w-[13rem] max-w-[17rem] appearance-none truncate border-0 bg-transparent py-0 pl-0 pr-7 text-xs font-medium outline-none transition-colors disabled:opacity-60"
                 >
-                  {CHAT_MODELS.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.label}
-                    </option>
-                  ))}
+                  {CHAT_MODELS.map((model) => {
+                    const status = providerStatusByModel.get(model.id);
+                    return (
+                      <option
+                        key={model.id}
+                        value={model.id}
+                        disabled={
+                          providerLoadState === "verified" &&
+                          status?.available === false
+                        }
+                      >
+                        {model.label}
+                        {status?.available === false ? " - unavailable" : ""}
+                      </option>
+                    );
+                  })}
                 </select>
                 <ChevronsUpDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               </label>
@@ -863,6 +929,51 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
                 </select>
                 <ChevronsUpDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               </label>
+              {(providerLoadState === "verification_error" ||
+                hasUnavailableProvider) && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="chat-provider-refresh h-8 px-2 text-xs"
+                  onClick={() => void loadProviderStatus(true)}
+                  disabled={providerLoadState === "checking"}
+                >
+                  <RefreshCw
+                    className={`h-3.5 w-3.5 ${
+                      providerLoadState === "checking" ? "animate-spin" : ""
+                    }`}
+                  />
+                  Refresh provider status
+                </Button>
+              )}
+            </div>
+            <div
+              id={PROVIDER_STATUS_ID}
+              className="chat-provider-status mt-1.5 min-h-5 text-xs text-muted-foreground"
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {providerLoadState === "checking" ? (
+                "Checking provider availability. Sending is disabled."
+              ) : providerLoadState === "verification_error" ? (
+                <>
+                  Provider verification failed. Sending is disabled. {" "}
+                  <span className="sr-only">{providerVerificationError}</span>
+                  Use Refresh provider status to retry.
+                </>
+              ) : selectedProviderStatus?.available ? (
+                selectedProviderStatus.state === "authenticated_unverified" ? (
+                  `${selectedProviderStatus.label}: authenticated; execution capacity is not smoke-tested.`
+                ) : (
+                  `${selectedProviderStatus.label}: ready.`
+                )
+              ) : selectedProviderStatus ? (
+                `${selectedProviderStatus.label}: unavailable. ${selectedProviderStatus.recovery_hint}`
+              ) : (
+                "Selected provider is not present in the verified registry. Choose another model."
+              )}
             </div>
           </div>
         </Card>
