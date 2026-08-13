@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import mimetypes
+import ipaddress
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -118,7 +120,27 @@ class KnowledgeHubClient:
         return self._post_json("knowledge_hub", self.base_url, "/retrieve", payload)
 
     def dantedash_import_packages(self, payload: dict[str, Any]) -> dict[str, Any]:
+        execute = payload.get("execute")
+        if not isinstance(execute, bool):
+            return _unavailable("knowledge_hub", "execute_flag_must_be_boolean")
+        if execute:
+            return self._post_local_action_json("/dantedash/packages/import", payload)
         return self._post_json("knowledge_hub", self.base_url, "/dantedash/packages/import", payload, sanitize=True)
+
+    def dantedash_package_audit(self) -> dict[str, Any]:
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/audit")
+
+    def dantedash_package_snapshots(self) -> dict[str, Any]:
+        return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/snapshots")
+
+    def dantedash_create_package_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post_local_action_json("/dantedash/packages/snapshots", payload)
+
+    def dantedash_acquire_recovery_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post_local_action_json("/dantedash/packages/recovery/lease", payload)
+
+    def dantedash_release_recovery_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post_local_action_json("/dantedash/packages/recovery/lease/release", payload)
 
     def dantedash_search_packages(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post_json("knowledge_hub", self.base_url, "/dantedash/packages/search", payload)
@@ -201,6 +223,21 @@ class KnowledgeHubClient:
 
     def close(self) -> None:
         self._http.close()
+
+    def _post_local_action_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """Send privileged Dante recovery calls only to a loopback KH URL."""
+        if not _is_loopback_http_url(self.base_url):
+            return _unavailable("knowledge_hub", "local_action_endpoint_required")
+        if not self.actions_bearer_token:
+            return _unavailable("knowledge_hub", "actions_bearer_required")
+        return self._post_json(
+            "knowledge_hub",
+            self.base_url,
+            path,
+            payload,
+            actions=True,
+            sanitize=True,
+        )
 
     def _get_json(
         self,
@@ -291,3 +328,16 @@ def _unavailable(surface: str, error: str, *, status_code: int | None = None) ->
         "status_code": status_code,
         "error": error,
     }
+
+
+def _is_loopback_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return False
+    hostname = parsed.hostname
+    if hostname == "localhost":
+        return True
+    try:
+        return bool(hostname and ipaddress.ip_address(hostname).is_loopback)
+    except ValueError:
+        return False

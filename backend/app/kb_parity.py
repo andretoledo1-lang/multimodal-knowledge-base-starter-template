@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -37,6 +38,55 @@ class KbParityAudit:
     by_kh_relationship: dict[str, int]
     by_vector_provenance: dict[str, int]
     rows: list[KbParityRow]
+
+
+@dataclass(frozen=True)
+class VectorDrift:
+    """Manifest-to-vector classification from a vector-store audit.
+
+    This deliberately accepts vector IDs, not package-manifest IDs.  A JSON
+    manifest can survive a failed vector rebuild and must never be treated as
+    proof that a point exists in the served collection.
+    """
+
+    expected_count: int
+    actual_count: int
+    missing_ids: tuple[str, ...]
+    stale_ids: tuple[str, ...]
+    conflict_ids: tuple[str, ...]
+    expected_id_digest: str
+    actual_id_digest: str
+
+    @property
+    def exact(self) -> bool:
+        return not (self.missing_ids or self.stale_ids or self.conflict_ids)
+
+
+def classify_vector_drift(
+    manifest_ids: Iterable[str],
+    vector_ids: Iterable[str],
+    *,
+    conflict_ids: Iterable[str] = (),
+) -> VectorDrift:
+    """Classify served vector state against authoritative manifest IDs."""
+
+    expected = _normalized_unique_ids(manifest_ids, label="manifest")
+    actual = _normalized_unique_ids(vector_ids, label="vector")
+    conflicts = _normalized_unique_ids(conflict_ids, label="conflict")
+    expected_set = set(expected)
+    actual_set = set(actual)
+    invalid_conflicts = set(conflicts) - (expected_set | actual_set)
+    if invalid_conflicts:
+        raise ValueError("conflict_ids_outside_audited_union")
+    return VectorDrift(
+        expected_count=len(expected),
+        actual_count=len(actual),
+        missing_ids=tuple(sorted(expected_set - actual_set)),
+        stale_ids=tuple(sorted(actual_set - expected_set)),
+        conflict_ids=tuple(conflicts),
+        expected_id_digest=_id_digest(expected),
+        actual_id_digest=_id_digest(actual),
+    )
 
 
 def package_key_from_metadata(metadata: Mapping[str, Any] | None, node_id: str = "") -> str:
@@ -311,3 +361,17 @@ def _result_package_key(result: Mapping[str, Any]) -> str:
         if key:
             return key
     return package_key_from_metadata(result)
+
+
+def _normalized_unique_ids(values: Iterable[str], *, label: str) -> tuple[str, ...]:
+    normalized = [str(value).strip() for value in values]
+    if any(not value for value in normalized):
+        raise ValueError(f"{label}_id_empty")
+    if len(normalized) != len(set(normalized)):
+        raise ValueError(f"{label}_ids_not_unique")
+    return tuple(sorted(normalized))
+
+
+def _id_digest(values: Sequence[str]) -> str:
+    encoded = json.dumps(list(values), ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()

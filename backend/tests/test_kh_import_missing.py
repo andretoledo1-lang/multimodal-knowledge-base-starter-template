@@ -33,9 +33,9 @@ def test_import_missing_execute_without_candidates_is_safe(tmp_path: Path) -> No
 
     payload = json.loads(result.stdout)
     assert payload["dry_run"] is False
-    assert payload["execute_supported"] is True
+    assert payload["execute_supported"] is False
     assert payload["mutation_performed"] is False
-    assert payload["execution"]["status"] == "skipped"
+    assert payload["execution"]["status"] == "disabled"
 
 
 def test_import_missing_dry_run_writes_candidate_manifest(tmp_path: Path) -> None:
@@ -115,3 +115,32 @@ def test_import_missing_requires_real_audit_summary() -> None:
 
     assert result.returncode != 0
     assert "--audit-summary is required" in result.stderr or "--audit-summary is required" in result.stdout
+
+
+def test_import_missing_refuses_legacy_execute_with_candidates(tmp_path: Path) -> None:
+    audit = tmp_path / "audit.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "rows": [
+                    {
+                        "node_id": "node-a",
+                        "row_class": "canonical",
+                        "kh_relationship": "missing_in_kh",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--execute", "--audit-summary", str(audit)],
+        cwd=REPO_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Legacy execute mode is disabled" in result.stderr

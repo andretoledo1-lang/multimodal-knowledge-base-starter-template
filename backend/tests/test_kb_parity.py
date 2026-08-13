@@ -2,14 +2,41 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.kb_parity import (
     audit_kb,
+    classify_vector_drift,
     classify_rows,
     evaluate_result_parity,
     package_key_from_metadata,
     vector_provenance_status,
     write_audit_manifests,
 )
+
+
+def test_classify_vector_drift_uses_served_vector_ids() -> None:
+    drift = classify_vector_drift(
+        ["node-a", "node-b"],
+        ["node-b", "foreign-stale"],
+        conflict_ids=["node-b"],
+    )
+
+    assert drift.expected_count == 2
+    assert drift.actual_count == 2
+    assert drift.missing_ids == ("node-a",)
+    assert drift.stale_ids == ("foreign-stale",)
+    assert drift.conflict_ids == ("node-b",)
+    assert drift.exact is False
+    assert len(drift.expected_id_digest) == 64
+    assert len(drift.actual_id_digest) == 64
+
+
+def test_classify_vector_drift_rejects_duplicate_or_unbound_ids() -> None:
+    with pytest.raises(ValueError, match="manifest_ids_not_unique"):
+        classify_vector_drift(["node-a", "node-a"], [])
+    with pytest.raises(ValueError, match="conflict_ids_outside_audited_union"):
+        classify_vector_drift(["node-a"], [], conflict_ids=["unknown"])
 
 
 class _FakeCollection:

@@ -145,6 +145,12 @@ class FailingImageQueryKnowledgeHubClient(FakeKnowledgeHubClient):
         return {"ok": False, "error": "service_unavailable"}
 
 
+class EmptyImageQueryKnowledgeHubClient(FakeKnowledgeHubClient):
+    def dantedash_search_packages_by_image(self, image_path, *, top_k=5):
+        self.image_queries.append((str(image_path), top_k))
+        return {"ok": True, "data": {"status": "ok", "items": []}}
+
+
 class UnavailableStatusKnowledgeHubClient(FakeKnowledgeHubClient):
     def dantedash_search_packages(self, _payload):
         return {"ok": True, "data": {"status": "unavailable", "items": []}}
@@ -259,6 +265,14 @@ def test_knowledge_hub_image_query_retries_transient_unavailable_status() -> Non
 
     assert kh.search_image("/tmp/query.jpg")[0].node_id == "kh-image-a"
     assert client.image_queries == [("/tmp/query.jpg", 5), ("/tmp/query.jpg", 5)]
+
+
+def test_knowledge_hub_image_query_accepts_healthy_empty_result() -> None:
+    client = EmptyImageQueryKnowledgeHubClient()
+    kh = KnowledgeHubKbBackend(client)
+
+    assert kh.search_image("/tmp/query.jpg") == []
+    assert client.image_queries == [("/tmp/query.jpg", 5)]
 
 
 def test_knowledge_hub_mode_falls_back_to_chroma_for_image_query_when_enabled() -> None:

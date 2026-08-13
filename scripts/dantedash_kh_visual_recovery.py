@@ -1,0 +1,840 @@
+#!/usr/bin/env python3
+"""Plan and execute a fail-closed, delta-only Dante visual vector recovery.
+
+Dry-run is the default and performs no network mutations and no provider calls.
+Stage A may reuse existing Chroma vectors only after a local provenance chain is
+validated. Stage B produces a complete immutable-source inventory; this tool
+intentionally has no provider adapter, so it cannot spend provider credit.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import math
+import os
+import re
+import secrets
+import struct
+import subprocess
+import sys
+import uuid
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Protocol, Sequence
+
+import httpx
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+BACKEND_ROOT = REPO_ROOT / "backend"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+from app.kb_parity import classify_vector_drift  # noqa: E402
+from app.knowledge_hub_client import sanitize_public_payload  # noqa: E402
+
+
+SCHEMA_VERSION = "dantedash_kh_visual_recovery.v1"
+EMBEDDING_FAMILY = "voyage_multimodal_3_5_1024"
+EMBEDDING_MODEL = "voyage-multimodal-3.5"
+EMBEDDING_DIMENSION = 1024
+DEFAULT_COLLECTION = "dante_multimodal_kb"
+DEFAULT_RECOVERY_ROOT = REPO_ROOT / "backend" / "runtime_reports" / "visual-recovery"
+DEFAULT_MANIFEST = Path("/Users/vidigal/.knowledge-hub/manifests/visual-memory/dantedash.json")
+DEFAULT_CHROMA = REPO_ROOT / "chroma_db"
+DEFAULT_EVIDENCE_COMMIT = "a933ab8"
+DEFAULT_EVIDENCE_SNAPSHOT = REPO_ROOT / "snapshots" / "DEEP_MEMORY_DANTEDASH_003.md"
+RUN_ID_RE = re.compile(r"^visual-recovery-\d{8}T\d{6}Z-[0-9a-f]{8}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+STAGE_B_ROLES = {
+    "docling_extracted_image": "source_image",
+    "qwen_reviewed_visual_card": "reviewed_visual_card",
+    "docling_page_package": "page_package",
+}
+
+
+class RecoveryError(RuntimeError):
+    """A safe, stable recovery blocker."""
+
+
+class CollectionLike(Protocol):
+    def get(self, **kwargs: Any) -> Mapping[str, Any]: ...
+
+    def count(self) -> int: ...
+
+
+@dataclass(frozen=True)
+class AuditEvidence:
+    collection_name: str
+    embedding_family: str
+    dimension: int
+    manifest_count: int
+    vector_count: int
+    total_vector_count: int
+    foreign_vector_count: int
+    manifest_file_sha256: str
+    manifest_content_digest: str
+    foreign_point_digest: str
+    collection_digest: str
+    actual_ids: tuple[str, ...]
+    conflict_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StageAReceipt:
+    status: str
+    row_count: int
+    database_digest: str
+    row_digest: str
+    document_digest: str
+    payload_digest: str
+    vector_digest: str
+    embedding_family: str
+    embedding_model: str
+    dimension: int
+    historical_evidence_digest: str
+    blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class StageBInventory:
+    status: str
+    row_count: int
+    by_artifact_type: dict[str, int]
+    matrix_digest: str
+    blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RecoveryBatch:
+    batch_id: str
+    batch_index: int
+    batch_count: int
+    row_count: int
+    source_bundle_digest: str
+    state: str
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def generate_run_id() -> str:
+    return "visual-recovery-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(4)
+
+
+def canonical_digest(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_manifest(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    if path.is_symlink() or not path.is_file():
+        raise RecoveryError("manifest_not_regular_file")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or not isinstance(payload.get("assets"), list):
+        raise RecoveryError("manifest_schema_invalid")
+    assets = [dict(item) for item in payload["assets"] if isinstance(item, dict)]
+    node_ids = [str(item.get("node_id") or "").strip() for item in assets]
+    if len(assets) != len(payload["assets"]) or any(not item for item in node_ids):
+        raise RecoveryError("manifest_asset_invalid")
+    if len(node_ids) != len(set(node_ids)):
+        raise RecoveryError("manifest_node_ids_not_unique")
+    if int(payload.get("asset_count") or len(assets)) != len(assets):
+        raise RecoveryError("manifest_asset_count_mismatch")
+    if payload.get("kb_slug") != "dantedash":
+        raise RecoveryError("manifest_kb_slug_mismatch")
+    if payload.get("embedding_family") != EMBEDDING_FAMILY:
+        raise RecoveryError("manifest_embedding_family_mismatch")
+    if int(payload.get("embedding_dimension") or 0) != EMBEDDING_DIMENSION:
+        raise RecoveryError("manifest_embedding_dimension_mismatch")
+    return payload, sorted(assets, key=lambda item: str(item["node_id"]))
+
+
+def manifest_content_digest(payload: Mapping[str, Any], assets: Sequence[Mapping[str, Any]]) -> str:
+    del payload
+    return canonical_digest(list(assets))
+
+
+def dantedash_point_id(node_id: str) -> str:
+    normalized = str(node_id).strip()
+    if not normalized:
+        raise RecoveryError("node_id_empty")
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"dantedash:{normalized}"))
+
+
+def parse_audit(raw: Mapping[str, Any], manifest_ids: Sequence[str]) -> AuditEvidence:
+    data = raw.get("data") if isinstance(raw.get("data"), Mapping) else raw
+    if not isinstance(data, Mapping):
+        raise RecoveryError("audit_response_invalid")
+    status = str(data.get("status") or "").lower()
+    if status not in {"ok", "ready", "degraded", "searchable_degraded"}:
+        raise RecoveryError("audit_status_unavailable")
+    drift = data.get("drift") if isinstance(data.get("drift"), Mapping) else {}
+    actual_raw = data.get("dantedash_point_ids")
+    if not isinstance(actual_raw, list):
+        actual_raw = drift.get("actual_ids") if isinstance(drift.get("actual_ids"), list) else None
+    vector_count = _required_nonnegative_int(data, "vector_count")
+    if actual_raw is None:
+        missing = drift.get("missing_ids")
+        stale = drift.get("stale_ids") or []
+        if isinstance(missing, list) and isinstance(stale, list):
+            missing_set = {str(item) for item in missing}
+            expected_points = {dantedash_point_id(node_id) for node_id in manifest_ids}
+            actual_raw = sorted((expected_points - missing_set) | {str(item) for item in stale})
+        elif vector_count == 0:
+            actual_raw = []
+        else:
+            raise RecoveryError("audit_vector_ids_missing")
+    conflict_raw = (
+        drift.get("point_conflict_ids")
+        or drift.get("conflict_ids")
+        or data.get("point_conflict_ids")
+        or data.get("conflict_ids")
+        or []
+    )
+    if not isinstance(conflict_raw, list):
+        raise RecoveryError("audit_conflict_ids_invalid")
+    actual_ids = tuple(sorted(str(item) for item in actual_raw))
+    conflict_ids = tuple(sorted(str(item) for item in conflict_raw))
+    if len(actual_ids) != len(set(actual_ids)) or len(actual_ids) != vector_count:
+        raise RecoveryError("audit_vector_count_mismatch")
+    foreign_digest = str(data.get("foreign_point_digest") or "")
+    collection_digest = str(data.get("collection_digest") or "")
+    manifest_file_sha256 = str(data.get("manifest_file_sha256") or data.get("manifest_digest") or "")
+    manifest_content_digest = str(data.get("manifest_content_digest") or data.get("manifest_digest") or "")
+    if not all(
+        SHA256_RE.fullmatch(value)
+        for value in (foreign_digest, collection_digest, manifest_file_sha256, manifest_content_digest)
+    ):
+        raise RecoveryError("audit_digest_invalid")
+    return AuditEvidence(
+        collection_name=str(data.get("collection_name") or ""),
+        embedding_family=str(data.get("embedding_family") or ""),
+        dimension=_required_positive_int(data, "dimension"),
+        manifest_count=_required_nonnegative_int(data, "manifest_count"),
+        vector_count=vector_count,
+        total_vector_count=_required_nonnegative_int(data, "total_vector_count"),
+        foreign_vector_count=_required_nonnegative_int(data, "foreign_vector_count"),
+        manifest_file_sha256=manifest_file_sha256,
+        manifest_content_digest=manifest_content_digest,
+        foreign_point_digest=foreign_digest,
+        collection_digest=collection_digest,
+        actual_ids=actual_ids,
+        conflict_ids=conflict_ids,
+    )
+
+
+def validate_audit_contract(audit: AuditEvidence, manifest_ids: Sequence[str], collection_name: str) -> None:
+    if audit.collection_name != collection_name:
+        raise RecoveryError("audit_collection_mismatch")
+    if audit.embedding_family != EMBEDDING_FAMILY or audit.dimension != EMBEDDING_DIMENSION:
+        raise RecoveryError("audit_embedding_contract_mismatch")
+    if audit.manifest_count != len(manifest_ids):
+        raise RecoveryError("audit_manifest_count_mismatch")
+    if audit.total_vector_count != audit.vector_count + audit.foreign_vector_count:
+        raise RecoveryError("audit_total_count_mismatch")
+    expected_point_ids = [dantedash_point_id(node_id) for node_id in manifest_ids]
+    classify_vector_drift(expected_point_ids, audit.actual_ids, conflict_ids=audit.conflict_ids)
+
+
+def fetch_audit(base_url: str, *, client: httpx.Client | None = None) -> dict[str, Any]:
+    owned = client is None
+    http = client or httpx.Client(timeout=30.0, follow_redirects=False)
+    try:
+        response = http.get(f"{base_url.rstrip('/')}/dantedash/packages/audit")
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise RecoveryError("knowledge_hub_audit_unavailable") from exc
+    finally:
+        if owned:
+            http.close()
+    if not isinstance(payload, dict):
+        raise RecoveryError("audit_response_invalid")
+    return payload
+
+
+def validate_historical_evidence(repo_root: Path, commit: str, snapshot: Path) -> dict[str, Any]:
+    if not re.fullmatch(r"[0-9a-f]{7,40}", commit):
+        raise RecoveryError("historical_commit_invalid")
+    if snapshot.is_symlink() or not snapshot.is_file():
+        raise RecoveryError("historical_snapshot_missing")
+    try:
+        commit_source = subprocess.run(
+            ["git", "show", f"{commit}:backend/app/kb.py"],
+            cwd=repo_root,
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RecoveryError("historical_commit_unavailable") from exc
+    snapshot_text = snapshot.read_text(encoding="utf-8")
+    current_source = (repo_root / "backend" / "app" / "kb.py").read_text(encoding="utf-8")
+    required = (EMBEDDING_MODEL, str(EMBEDDING_DIMENSION))
+    if not all(term in commit_source for term in required):
+        raise RecoveryError("historical_commit_contract_mismatch")
+    if not all(term in snapshot_text for term in required):
+        raise RecoveryError("historical_snapshot_contract_mismatch")
+    if not all(term in current_source for term in required):
+        raise RecoveryError("current_embedding_contract_mismatch")
+    return {
+        "commit": commit,
+        "commit_source_sha256": hashlib.sha256(commit_source.encode("utf-8")).hexdigest(),
+        "snapshot_sha256": sha256_file(snapshot),
+        "current_source_sha256": sha256_file(repo_root / "backend" / "app" / "kb.py"),
+        "embedding_family": EMBEDDING_FAMILY,
+        "embedding_model": EMBEDDING_MODEL,
+        "dimension": EMBEDDING_DIMENSION,
+        "evidence_strength": "indirect_specific_workspace_chain",
+    }
+
+
+def digest_file_tree(root: Path) -> str:
+    if root.is_symlink() or not root.is_dir():
+        raise RecoveryError("chroma_database_directory_invalid")
+    entries: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink():
+            raise RecoveryError("chroma_database_symlink_refused")
+        if not path.is_file() or path.name.endswith(("-shm", "-wal", ".lock")):
+            continue
+        entries.append(
+            {
+                "relative_path": path.relative_to(root).as_posix(),
+                "size": path.stat().st_size,
+                "sha256": sha256_file(path),
+            }
+        )
+    if not entries:
+        raise RecoveryError("chroma_database_empty")
+    return canonical_digest(entries)
+
+
+def build_stage_a(
+    collection: CollectionLike,
+    manifest_assets: Sequence[Mapping[str, Any]],
+    *,
+    database_digest: str,
+    historical_evidence: Mapping[str, Any],
+) -> tuple[StageAReceipt, list[dict[str, Any]]]:
+    manifest_by_id = {str(item["node_id"]): item for item in manifest_assets}
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    offset = 0
+    page_size = 128
+    while offset < int(collection.count()):
+        payload = collection.get(
+            limit=page_size,
+            offset=offset,
+            include=["metadatas", "documents", "embeddings"],
+        )
+        ids = [str(item) for item in payload.get("ids") or []]
+        metadatas = payload.get("metadatas") or []
+        documents = payload.get("documents") or []
+        embeddings = payload.get("embeddings")
+        embeddings = [] if embeddings is None else embeddings
+        if not ids:
+            break
+        if not (len(ids) == len(metadatas) == len(documents) == len(embeddings)):
+            raise RecoveryError("chroma_page_shape_mismatch")
+        for node_id, raw_meta, raw_document, raw_embedding in zip(
+            ids, metadatas, documents, embeddings, strict=True
+        ):
+            asset = manifest_by_id.get(node_id)
+            if asset is None:
+                blockers.append(f"chroma_id_not_in_manifest:{node_id}")
+                continue
+            document = str(raw_document or "")
+            if document != str(asset.get("document") or ""):
+                blockers.append(f"chroma_document_mismatch:{node_id}")
+                continue
+            metadata = dict(raw_meta or {})
+            asset_meta = dict(asset.get("metadata") or {})
+            for identity_field in ("id", "file_id", "node_id"):
+                value = metadata.get(identity_field)
+                expected_value = asset_meta.get(identity_field)
+                if value not in (None, "") and expected_value not in (None, "") and value != expected_value:
+                    blockers.append(f"chroma_identity_mismatch:{node_id}:{identity_field}")
+            if metadata.get("payload_hash") and metadata.get("payload_hash") != asset_meta.get("payload_hash"):
+                blockers.append(f"chroma_payload_hash_mismatch:{node_id}")
+            vector = _embedding_to_float_list(raw_embedding)
+            if len(vector) != EMBEDDING_DIMENSION or any(not math.isfinite(value) for value in vector):
+                blockers.append(f"chroma_vector_contract_mismatch:{node_id}")
+                continue
+            packed = struct.pack(f">{len(vector)}f", *vector)
+            rows.append(
+                {
+                    "node_id": node_id,
+                    "document": document,
+                    "document_sha256": hashlib.sha256(document.encode("utf-8")).hexdigest(),
+                    "source_metadata_digest": canonical_digest(metadata),
+                    "payload_identity_digest": canonical_digest(
+                        {"document": document, "metadata": asset_meta, "node_id": node_id}
+                    ),
+                    "metadata": asset_meta,
+                    "embedding_f32be_b64": base64.b64encode(packed).decode("ascii"),
+                    "vector_sha256": hashlib.sha256(packed).hexdigest(),
+                }
+            )
+        offset += len(ids)
+    rows.sort(key=lambda item: item["node_id"])
+    if len(rows) != int(collection.count()) and not blockers:
+        blockers.append("chroma_collection_pagination_incomplete")
+    receipt = StageAReceipt(
+        status="certified" if not blockers else "blocked",
+        row_count=len(rows),
+        database_digest=database_digest,
+        row_digest=canonical_digest(
+            [{"node_id": row["node_id"], "source_metadata_digest": row["source_metadata_digest"]} for row in rows]
+        ),
+        document_digest=canonical_digest(
+            [{"node_id": row["node_id"], "sha256": row["document_sha256"]} for row in rows]
+        ),
+        payload_digest=canonical_digest(
+            [{"node_id": row["node_id"], "sha256": row["payload_identity_digest"]} for row in rows]
+        ),
+        vector_digest=canonical_digest(
+            [{"node_id": row["node_id"], "sha256": row["vector_sha256"]} for row in rows]
+        ),
+        embedding_family=EMBEDDING_FAMILY,
+        embedding_model=EMBEDDING_MODEL,
+        dimension=EMBEDDING_DIMENSION,
+        historical_evidence_digest=canonical_digest(historical_evidence),
+        blockers=tuple(sorted(blockers)),
+    )
+    return receipt, rows
+
+
+def build_stage_b_inventory(
+    manifest_assets: Sequence[Mapping[str, Any]],
+    stage_a_ids: Iterable[str],
+    qdrant_actual_ids: Iterable[str],
+) -> tuple[StageBInventory, list[dict[str, Any]]]:
+    stage_a_set = set(stage_a_ids)
+    actual_set = set(qdrant_actual_ids)
+    rows: list[dict[str, Any]] = []
+    blockers: list[str] = []
+    counts: dict[str, int] = {}
+    for asset in manifest_assets:
+        node_id = str(asset["node_id"])
+        if node_id in stage_a_set:
+            continue
+        artifact_type = str(asset.get("artifact_type") or "")
+        role = STAGE_B_ROLES.get(artifact_type)
+        row_blockers: list[str] = []
+        if role is None:
+            row_blockers.append("adapter_not_supported")
+        document = str(asset.get("document") or "")
+        metadata = dict(asset.get("metadata") or {})
+        if not document.strip():
+            row_blockers.append("canonical_document_missing")
+        payload_hash = str(metadata.get("payload_hash") or "")
+        payload_hash_origin = "manifest_metadata"
+        if not SHA256_RE.fullmatch(payload_hash):
+            payload_hash = canonical_digest({"document": document, "metadata": metadata, "node_id": node_id})
+            payload_hash_origin = "derived_from_locked_manifest_asset"
+        input_kind = "canonical_text"
+        input_sha256 = hashlib.sha256(document.encode("utf-8")).hexdigest()
+        immutable_source = "manifest_asset"
+        source_locator = f"manifest://{node_id}"
+        byte_size = len(document.encode("utf-8"))
+        if role == "source_image":
+            input_kind = "image_bytes"
+            source_path = Path(str(asset.get("source_path") or ""))
+            immutable_source = "source_file"
+            source_locator = str(source_path)
+            if source_path.is_symlink() or not source_path.is_file():
+                row_blockers.append("immutable_image_source_missing")
+                input_sha256 = ""
+                byte_size = 0
+            else:
+                input_sha256 = sha256_file(source_path)
+                byte_size = source_path.stat().st_size
+                expected = str(metadata.get("artifact_sha256") or asset.get("source_sha256") or "")
+                if input_sha256 != expected:
+                    row_blockers.append("immutable_image_hash_mismatch")
+        if row_blockers:
+            blockers.extend(f"{node_id}:{blocker}" for blocker in row_blockers)
+        counts[artifact_type or "unknown"] = counts.get(artifact_type or "unknown", 0) + 1
+        rows.append(
+            {
+                "node_id": node_id,
+                "artifact_type": artifact_type,
+                "role": role or "unsupported",
+                "input_kind": input_kind,
+                "immutable_source": immutable_source,
+                "source_locator": source_locator,
+                "input_sha256": input_sha256,
+                "input_bytes": byte_size,
+                "canonical_document": document,
+                "document_sha256": hashlib.sha256(document.encode("utf-8")).hexdigest(),
+                "payload_hash": payload_hash,
+                "payload_hash_origin": payload_hash_origin,
+                "metadata": metadata,
+                "payload_identity_digest": canonical_digest(
+                    {"document": document, "metadata": metadata, "node_id": node_id}
+                ),
+                "embedding_family": EMBEDDING_FAMILY,
+                "embedding_model": EMBEDDING_MODEL,
+                "dimension": EMBEDDING_DIMENSION,
+                "qdrant_state": "already_present" if node_id in actual_set else "missing",
+                "adapter_state": "inventory_only_no_provider_calls",
+                "blockers": sorted(row_blockers),
+            }
+        )
+    rows.sort(key=lambda item: item["node_id"])
+    status = "inventory_certified_embedding_pending" if not blockers else "blocked"
+    return (
+        StageBInventory(
+            status=status,
+            row_count=len(rows),
+            by_artifact_type=dict(sorted(counts.items())),
+            matrix_digest=canonical_digest(rows),
+            blockers=tuple(sorted(blockers)),
+        ),
+        rows,
+    )
+
+
+def plan_recovery_batches(
+    run_id: str,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    batch_size: int,
+    settled_batch_digests: Iterable[str] = (),
+) -> list[RecoveryBatch]:
+    """Create deterministic resume/replay units without performing writes."""
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise RecoveryError("run_id_invalid")
+    if batch_size < 1 or batch_size > 256:
+        raise RecoveryError("batch_size_out_of_range")
+    settled = {str(value) for value in settled_batch_digests}
+    if any(not SHA256_RE.fullmatch(value) for value in settled):
+        raise RecoveryError("settled_batch_digest_invalid")
+    ordered = sorted((dict(row) for row in rows), key=lambda row: str(row.get("node_id") or ""))
+    node_ids = [str(row.get("node_id") or "") for row in ordered]
+    if any(not node_id for node_id in node_ids) or len(node_ids) != len(set(node_ids)):
+        raise RecoveryError("batch_node_ids_invalid")
+    chunks = [ordered[index : index + batch_size] for index in range(0, len(ordered), batch_size)]
+    result: list[RecoveryBatch] = []
+    for index, chunk in enumerate(chunks, start=1):
+        digest = canonical_digest(chunk)
+        result.append(
+            RecoveryBatch(
+                batch_id=f"{run_id}:{index:05d}:{digest[:12]}",
+                batch_index=index,
+                batch_count=len(chunks),
+                row_count=len(chunk),
+                source_bundle_digest=digest,
+                state="settled_replay_skip" if digest in settled else "pending",
+            )
+        )
+    unknown = settled - {batch.source_bundle_digest for batch in result}
+    if unknown:
+        raise RecoveryError("settled_batch_not_in_source_bundle")
+    return result
+
+
+def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    manifest_payload, assets = load_manifest(Path(args.manifest))
+    manifest_ids = [str(item["node_id"]) for item in assets]
+    local_manifest_digest = manifest_content_digest(manifest_payload, assets)
+    audit = parse_audit(audit_raw or fetch_audit(args.knowledge_hub_base_url), manifest_ids)
+    validate_audit_contract(audit, manifest_ids, args.collection)
+    if audit.manifest_file_sha256 != sha256_file(Path(args.manifest)):
+        raise RecoveryError("audit_manifest_file_digest_mismatch")
+    if audit.manifest_content_digest != local_manifest_digest:
+        raise RecoveryError("audit_manifest_content_digest_mismatch")
+    historical = validate_historical_evidence(
+        Path(args.repo_root), args.historical_commit, Path(args.historical_snapshot)
+    )
+    chroma_dir = Path(args.chroma_dir)
+    database_digest_before = digest_file_tree(chroma_dir)
+    collection = _open_chroma_collection(chroma_dir, args.chroma_collection)
+    stage_a, stage_a_rows = build_stage_a(
+        collection,
+        assets,
+        database_digest=database_digest_before,
+        historical_evidence=historical,
+    )
+    database_digest_after = digest_file_tree(chroma_dir)
+    if database_digest_after != database_digest_before:
+        raise RecoveryError("chroma_database_changed_during_audit")
+    expected_point_ids = [dantedash_point_id(node_id) for node_id in manifest_ids]
+    drift = classify_vector_drift(expected_point_ids, audit.actual_ids, conflict_ids=audit.conflict_ids)
+    actual_point_ids = set(audit.actual_ids)
+    actual_node_ids = [node_id for node_id in manifest_ids if dantedash_point_id(node_id) in actual_point_ids]
+    stage_b, stage_b_rows = build_stage_b_inventory(
+        assets,
+        (row["node_id"] for row in stage_a_rows),
+        actual_node_ids,
+    )
+    run_id = generate_run_id()
+    run_dir = create_private_run_dir(Path(args.output_root), run_id)
+    stage_a_path = run_dir / "stage-a-source-bundle.jsonl"
+    stage_b_path = run_dir / "stage-b-source-matrix.jsonl"
+    write_jsonl_once(stage_a_path, stage_a_rows)
+    write_jsonl_once(stage_b_path, stage_b_rows)
+    stage_a_bundle_digest = sha256_file(stage_a_path)
+    stage_b_bundle_digest = sha256_file(stage_b_path)
+    plan: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "run_id": run_id,
+        "generated_at": utc_now(),
+        "mode": "dry_run",
+        "mutation_performed": False,
+        "provider_calls_performed": 0,
+        "collection_name": audit.collection_name,
+        "collection_contract": {
+            "embedding_family": audit.embedding_family,
+            "dimension": audit.dimension,
+        },
+        "manifest": {
+            "count": len(assets),
+            "file_sha256": sha256_file(Path(args.manifest)),
+            "content_digest": local_manifest_digest,
+            "kh_manifest_file_sha256": audit.manifest_file_sha256,
+            "kh_manifest_content_digest": audit.manifest_content_digest,
+        },
+        "baseline": {
+            "dantedash_vector_count": audit.vector_count,
+            "foreign_vector_count": audit.foreign_vector_count,
+            "total_vector_count": audit.total_vector_count,
+            "foreign_point_digest": audit.foreign_point_digest,
+            "collection_digest": audit.collection_digest,
+            "expected_id_digest": drift.expected_id_digest,
+            "actual_id_digest": drift.actual_id_digest,
+            "missing_count": len(drift.missing_ids),
+            "stale_count": len(drift.stale_ids),
+            "conflict_count": len(drift.conflict_ids),
+        },
+        "stage_a": asdict(stage_a),
+        "stage_b": asdict(stage_b),
+        "bundles": {
+            "stage_a": {"filename": stage_a_path.name, "sha256": stage_a_bundle_digest},
+            "stage_b": {"filename": stage_b_path.name, "sha256": stage_b_bundle_digest},
+        },
+        "execution": {
+            "stage_a_supported": False,
+            "stage_a_blocker": "receipt_bound_executor_not_enabled",
+            "stage_b_supported": False,
+            "stage_b_blocker": "provider_adapter_not_configured",
+            "requires_actions_bearer": True,
+            "requires_snapshot_receipt": True,
+            "requires_recovery_lease": True,
+        },
+    }
+    digest_basis = dict(plan)
+    plan["plan_digest"] = canonical_digest(digest_basis)
+    write_json_once(run_dir / "plan.json", plan)
+    append_ledger_event(
+        run_dir / "ledger.jsonl",
+        {
+            "event": "dry_run_planned",
+            "run_id": run_id,
+            "plan_digest": plan["plan_digest"],
+            "stage_a_rows": stage_a.row_count,
+            "stage_b_rows": stage_b.row_count,
+            "mutation_performed": False,
+            "provider_calls_performed": 0,
+        },
+    )
+    write_json_once(
+        run_dir / "rollback-plan.json",
+        {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": run_id,
+            "plan_digest": plan["plan_digest"],
+            "snapshot_required": True,
+            "foreign_baseline_digest": audit.foreign_point_digest,
+            "inserted_ids": [],
+            "allowed_action": "delete_exact_recorded_inserted_ids_only",
+            "served_collection_snapshot_restore_allowed": False,
+        },
+    )
+    freeze_file(stage_a_path)
+    freeze_file(stage_b_path)
+    freeze_file(run_dir / "plan.json")
+    freeze_file(run_dir / "rollback-plan.json")
+    public = sanitize_public_payload(plan)
+    if not isinstance(public, dict):
+        raise RecoveryError("public_summary_invalid")
+    public["run_artifacts"] = {
+        "run_id": run_id,
+        "plan": "plan.json",
+        "ledger": "ledger.jsonl",
+        "stage_a_bundle": stage_a_path.name,
+        "stage_b_matrix": stage_b_path.name,
+        "rollback_plan": "rollback-plan.json",
+    }
+    return public
+
+
+def create_private_run_dir(root: Path, run_id: str) -> Path:
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise RecoveryError("run_id_invalid")
+    root = root.expanduser()
+    if not root.is_absolute():
+        raise RecoveryError("output_root_must_be_absolute")
+    _reject_symlink_components(root)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    root.chmod(0o700)
+    resolved_root = root.resolve(strict=True)
+    run_dir = resolved_root / run_id
+    if run_dir.exists() or run_dir.is_symlink():
+        raise RecoveryError("run_directory_exists")
+    run_dir.mkdir(mode=0o700)
+    if run_dir.parent != resolved_root:
+        raise RecoveryError("run_path_escape")
+    return run_dir
+
+
+def write_json_once(path: Path, payload: Mapping[str, Any]) -> None:
+    _write_bytes_once(path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+
+
+def write_jsonl_once(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
+    body = b"".join(
+        (json.dumps(dict(row), ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
+        for row in rows
+    )
+    _write_bytes_once(path, body)
+
+
+def append_ledger_event(path: Path, event: Mapping[str, Any]) -> None:
+    previous = "0" * 64
+    if path.exists():
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if lines:
+            previous = str(json.loads(lines[-1]).get("event_digest") or "")
+            if not SHA256_RE.fullmatch(previous):
+                raise RecoveryError("ledger_chain_invalid")
+    record = {"recorded_at": utc_now(), "previous_event_digest": previous, **dict(event)}
+    record["event_digest"] = canonical_digest(record)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        os.write(descriptor, (json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    path.chmod(0o600)
+
+
+def freeze_file(path: Path) -> None:
+    if path.is_symlink() or not path.is_file():
+        raise RecoveryError("bundle_freeze_target_invalid")
+    path.chmod(0o400)
+
+
+def _write_bytes_once(path: Path, data: bytes) -> None:
+    if path.parent.is_symlink() or path.exists() or path.is_symlink():
+        raise RecoveryError("artifact_overwrite_refused")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(descriptor, data)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    path.chmod(0o600)
+
+
+def _reject_symlink_components(path: Path) -> None:
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current = current / part
+        if current.exists() and current.is_symlink():
+            raise RecoveryError("symlink_output_path_refused")
+
+
+def _open_chroma_collection(chroma_dir: Path, collection_name: str) -> CollectionLike:
+    try:
+        import chromadb
+
+        client = chromadb.PersistentClient(path=str(chroma_dir))
+        return client.get_collection(collection_name)
+    except Exception as exc:  # noqa: BLE001 - normalized, secret-free blocker.
+        raise RecoveryError("chroma_collection_unavailable") from exc
+
+
+def _embedding_to_float_list(value: Any) -> list[float]:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if not isinstance(value, list):
+        return []
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        return []
+
+
+def decode_stage_a_vector(row: Mapping[str, Any]) -> list[float]:
+    encoded = str(row.get("embedding_f32be_b64") or "")
+    try:
+        packed = base64.b64decode(encoded, validate=True)
+    except ValueError as exc:
+        raise RecoveryError("stage_a_vector_encoding_invalid") from exc
+    if len(packed) != EMBEDDING_DIMENSION * 4 or hashlib.sha256(packed).hexdigest() != row.get("vector_sha256"):
+        raise RecoveryError("stage_a_vector_digest_mismatch")
+    return list(struct.unpack(f">{EMBEDDING_DIMENSION}f", packed))
+
+
+def _required_nonnegative_int(data: Mapping[str, Any], key: str) -> int:
+    try:
+        value = int(data[key])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RecoveryError(f"audit_{key}_invalid") from exc
+    if value < 0:
+        raise RecoveryError(f"audit_{key}_invalid")
+    return value
+
+
+def _required_positive_int(data: Mapping[str, Any], key: str) -> int:
+    value = _required_nonnegative_int(data, key)
+    if value < 1:
+        raise RecoveryError(f"audit_{key}_invalid")
+    return value
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
+    parser.add_argument("--chroma-dir", default=str(DEFAULT_CHROMA))
+    parser.add_argument("--chroma-collection", default=DEFAULT_COLLECTION)
+    parser.add_argument("--collection", default="visual_memory__voyage_multimodal_3_5_1024")
+    parser.add_argument("--knowledge-hub-base-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--output-root", default=str(DEFAULT_RECOVERY_ROOT))
+    parser.add_argument("--repo-root", default=str(REPO_ROOT))
+    parser.add_argument("--historical-commit", default=DEFAULT_EVIDENCE_COMMIT)
+    parser.add_argument("--historical-snapshot", default=str(DEFAULT_EVIDENCE_SNAPSHOT))
+    parser.add_argument("--batch-size", type=int, default=128)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        result = plan_recovery(args)
+    except RecoveryError as exc:
+        print(json.dumps({"ok": False, "status": "blocked", "blocker": str(exc)}), file=sys.stderr)
+        return 2
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
