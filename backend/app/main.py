@@ -16,13 +16,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .deps import get_kb_gateway, get_knowledge_hub_client, get_settings
-from .routes import chat, chat_state, graph, ingest, knowledge_hub, library, preview, search, vault_index
+from .routes import (
+    chat,
+    chat_state,
+    graph,
+    ingest,
+    knowledge_hub,
+    library,
+    preview,
+    provider_status,
+    search,
+    vault_index,
+)
 
 logger = logging.getLogger("kb")
+_LOOPBACK_BIND_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+
+def validate_effective_bind_address() -> None:
+    host = os.getenv("DANTE_MULTIMODAL_EFFECTIVE_BIND_ADDRESS", "127.0.0.1").strip().casefold()
+    if host not in _LOOPBACK_BIND_HOSTS:
+        raise RuntimeError("DanteDash refuses a non-loopback backend bind without an authenticated gateway.")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    validate_effective_bind_address()
     settings = get_settings()
     logging.basicConfig(
         level=settings.log_level,
@@ -38,6 +57,7 @@ async def lifespan(_app: FastAPI):
         finally:
             get_knowledge_hub_client.cache_clear()
             get_kb_gateway.cache_clear()
+            provider_status.get_provider_readiness_service.cache_clear()
 
 
 app = FastAPI(
@@ -77,6 +97,7 @@ if _cors_origins:
 app.include_router(ingest.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(chat.router, prefix="/api")
+app.include_router(provider_status.router, prefix="/api")
 app.include_router(chat_state.router, prefix="/api")
 app.include_router(library.router, prefix="/api")
 app.include_router(preview.router, prefix="/api")

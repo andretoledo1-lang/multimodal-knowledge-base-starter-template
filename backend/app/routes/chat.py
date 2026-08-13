@@ -13,6 +13,11 @@ from ..deps import get_chat_store, get_kb_gateway
 from ..kb_backends import KbBackendUnavailable
 from ..kb_gateway import KbGateway
 from ..providers import ProviderError
+from ..provider_readiness import (
+    classify_runtime_exception,
+    clear_runtime_failure,
+    record_runtime_failure,
+)
 from ..rag import GroundedAnswer, answer_with_vision
 from ..schemas import ChatRequest, search_result_to_dto
 
@@ -68,11 +73,18 @@ def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
                 yield _sse(None, json.dumps(chunk))
             else:
                 final = chunk
-    except ProviderError:
-        logger.exception("Chat provider failed")
+    except ProviderError as exc:
+        cause = classify_runtime_exception(exc)
+        record_runtime_failure(req.chat_model, cause)
+        logger.warning("Chat provider failed model=%s cause=%s", req.chat_model, cause)
         yield _sse(
             "error",
-            json.dumps({"message": f"Selected chat mode {req.chat_model} is currently unavailable."}),
+            json.dumps(
+                {
+                    "message": f"Selected chat mode {req.chat_model} is currently unavailable.",
+                    "cause": cause,
+                }
+            ),
         )
         yield _sse("done", "{}")
         return
@@ -81,7 +93,7 @@ def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
         yield _sse("error", json.dumps({"message": "Knowledge base backend unavailable."}))
         yield _sse("done", "{}")
         return
-    except Exception as e:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         logger.exception("Chat stream failed")
         yield _sse("error", json.dumps({"message": "Chat failed before a grounded answer could be produced."}))
         yield _sse("done", "{}")
@@ -89,6 +101,8 @@ def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
 
     sources_payload: dict = {"sources": [], "visual_attachments": 0}
     if final is not None:
+        if token_count == 0 and final.answer:
+            yield _sse(None, json.dumps(final.answer))
         sources_payload["visual_attachments"] = final.visual_attachments
         sources_payload["sources"] = [
             search_result_to_dto(r).model_dump() for r in final.sources
@@ -112,6 +126,8 @@ def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
                 chat_model=req.chat_model,
                 top_k=req.top_k,
             )
+        if token_count > 0:
+            clear_runtime_failure(req.chat_model)
 
     logger.info(
         "chat q=%r thread=%s user_msg=%s tokens=%d sources=%d visuals=%d",

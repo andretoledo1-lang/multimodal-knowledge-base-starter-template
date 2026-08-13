@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 from app.provider_preflight import (
+    classify_provider_failure,
     preflight_claude_oauth_runtime,
     preflight_codex_oauth_runtime,
     preflight_deepseek_config,
 )
+
+
+def test_failure_classifier_returns_fixed_safe_causes() -> None:
+    assert classify_provider_failure("private account output", status_code=401) == "auth_required"
+    assert classify_provider_failure("Insufficient Balance", status_code=402) == "billing_required"
+    assert classify_provider_failure("rate limit reached") == "rate_limited"
+    assert classify_provider_failure("model not found") == "model_unavailable"
+    assert classify_provider_failure("/Users/private/raw-token") == "integration_error"
 
 
 def test_deepseek_preflight_does_not_need_secret_value() -> None:

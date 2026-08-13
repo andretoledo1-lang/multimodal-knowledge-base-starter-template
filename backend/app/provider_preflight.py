@@ -1,8 +1,71 @@
-"""Provider preflight checks that avoid printing secrets or auth state."""
+"""Provider preflight and safe failure classification helpers."""
 from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
+from typing import Literal
+
+ProviderCause = Literal[
+    "ready",
+    "auth_required",
+    "billing_required",
+    "quota_exhausted",
+    "rate_limited",
+    "model_unavailable",
+    "timeout",
+    "binary_missing",
+    "config_missing",
+    "verification_unavailable",
+    "capacity_unverified",
+    "integration_error",
+]
+
+
+def classify_provider_failure(
+    detail: str = "",
+    *,
+    status_code: int | None = None,
+) -> ProviderCause:
+    """Reduce provider output to a fixed, non-sensitive cause code."""
+    text = detail.casefold()
+    if status_code in {401, 403} or any(
+        marker in text
+        for marker in ("not logged in", "login required", "unauthorized", "authentication", "oauth")
+    ):
+        return "auth_required"
+    if status_code == 402 or any(
+        marker in text for marker in ("billing", "payment required", "insufficient balance")
+    ):
+        return "billing_required"
+    if any(marker in text for marker in ("quota", "usage limit", "credit balance")):
+        return "quota_exhausted"
+    if status_code == 429 or any(marker in text for marker in ("rate limit", "too many requests")):
+        return "rate_limited"
+    if status_code in {404, 422} or any(
+        marker in text for marker in ("model not found", "unknown model", "invalid model")
+    ):
+        return "model_unavailable"
+    if any(marker in text for marker in ("timed out", "timeout")):
+        return "timeout"
+    return "integration_error"
+
+
+def recovery_hint_for_cause(cause: ProviderCause) -> str:
+    """Return a fixed operator hint without echoing provider output."""
+    return {
+        "ready": "Provider is ready.",
+        "auth_required": "Sign in to this provider, then refresh provider status.",
+        "billing_required": "Review provider billing, then refresh provider status.",
+        "quota_exhausted": "Wait for quota renewal or add capacity, then refresh.",
+        "rate_limited": "Wait briefly, then refresh provider status.",
+        "model_unavailable": "Verify that the configured model is available to this account.",
+        "timeout": "Check provider connectivity, then retry.",
+        "binary_missing": "Install the provider CLI or correct its configured path.",
+        "config_missing": "Configure this provider, then refresh provider status.",
+        "verification_unavailable": "Provider status could not be verified. Retry the check.",
+        "capacity_unverified": "Authentication is valid, but execution capacity has not been smoke-tested.",
+        "integration_error": "Check the provider integration, then retry.",
+    }[cause]
 
 
 @dataclass(frozen=True)

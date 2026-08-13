@@ -10,11 +10,30 @@ API_PROXY_TARGET="http://${BACKEND_HOST}:${BACKEND_PORT}"
 UV_BIN="${UV_BIN:-/Users/vidigal/.local/bin/uv}"
 PNPM_BIN="${PNPM_BIN:-/opt/homebrew/bin/pnpm}"
 
+is_loopback_host() {
+  case "${1}" in
+    127.0.0.1|localhost|LOCALHOST|::1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+if ! is_loopback_host "${BACKEND_HOST}" || ! is_loopback_host "${FRONTEND_HOST}"; then
+  echo "DanteDash refuses non-loopback binds without an authenticated gateway." >&2
+  exit 2
+fi
+
+export DANTE_MULTIMODAL_EFFECTIVE_BIND_ADDRESS="${BACKEND_HOST}"
+export DANTE_MULTIMODAL_AUTH_POLICY="loopback_only"
+
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/Users/vidigal/.local/bin:${PATH:-}"
 
 # shellcheck source=scripts/dante_kb_runtime_env.sh
 source "${ROOT_DIR}/scripts/dante_kb_runtime_env.sh"
 dante_export_kb_runtime_defaults
+
+if [[ "${DANTE_LAUNCHER_VALIDATE_ONLY:-false}" == "true" ]]; then
+  exit 0
+fi
 
 cleanup() {
   trap - INT TERM EXIT

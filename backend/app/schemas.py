@@ -1,7 +1,7 @@
 """Pydantic request/response models for the API layer."""
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -41,6 +41,31 @@ class ChatRequest(BaseModel):
     chat_model: ChatModelId = CHAT_MODEL_DEEPSEEK
     project_id: str | None = None
     thread_id: str | None = None
+
+
+class ProviderCheckDTO(BaseModel):
+    state: str
+    checked_at: str | None = None
+
+
+class ProviderStatusDTO(BaseModel):
+    model_id: ChatModelId
+    label: str
+    provider_family: str
+    state: Literal["ready", "authenticated_unverified", "unavailable"]
+    available: bool
+    cause: str
+    retryable: bool
+    recovery_hint: str
+    auth: ProviderCheckDTO
+    capacity: ProviderCheckDTO
+    last_smoke: ProviderCheckDTO
+
+
+class ProviderStatusResponse(BaseModel):
+    status: Literal["verified"]
+    checked_at: str
+    providers: list[ProviderStatusDTO]
 
 
 class ProjectCreateRequest(BaseModel):

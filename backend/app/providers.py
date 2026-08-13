@@ -14,11 +14,17 @@ from typing import Any
 
 import httpx
 
+from .provider_preflight import ProviderCause, classify_provider_failure
+
 logger = logging.getLogger("kb.providers")
 
 
 class ProviderError(RuntimeError):
     """Raised when a cloud provider returns an unusable response."""
+
+    def __init__(self, message: str, *, cause: ProviderCause = "integration_error") -> None:
+        super().__init__(message)
+        self.cause = cause
 
 
 @dataclass
@@ -188,7 +194,8 @@ class DeepSeekChatClient:
         ) as response:
             if response.status_code >= 400:
                 text = response.read().decode("utf-8", errors="replace")
-                raise ProviderError(f"DeepSeek chat HTTP {response.status_code}: {text[:500]}")
+                cause = classify_provider_failure(text, status_code=response.status_code)
+                raise ProviderError("DeepSeek chat is unavailable.", cause=cause)
 
             for line in response.iter_lines():
                 if not line or not line.startswith("data:"):
@@ -298,23 +305,23 @@ class CodexOAuthChatClient:
                 str(out_path),
                 prompt,
             ]
-            proc = subprocess.run(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                env=_codex_oauth_env(),
-                text=True,
-                timeout=self.timeout_s,
-            )
+            try:
+                proc = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=_codex_oauth_env(),
+                    text=True,
+                    timeout=self.timeout_s,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise ProviderError("Codex OAuth chat timed out.", cause="timeout") from exc
             if proc.returncode != 0:
-                raise ProviderError(
-                    f"Codex OAuth chat failed rc={proc.returncode}: {proc.stderr[-500:]}"
-                )
+                cause = classify_provider_failure(f"{proc.stdout}\n{proc.stderr}")
+                raise ProviderError("Codex OAuth chat is unavailable.", cause=cause)
             if not out_path.exists():
-                raise ProviderError(
-                    f"Codex OAuth chat produced no output: {proc.stderr[-500:]}"
-                )
+                raise ProviderError("Codex OAuth chat produced no output.")
             answer = out_path.read_text(encoding="utf-8").strip()
 
         if not answer:
@@ -352,20 +359,21 @@ class ClaudeOAuthChatClient:
             "--no-session-persistence",
             prompt,
         ]
-        proc = subprocess.run(
-            cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=_claude_oauth_env(),
-            text=True,
-            timeout=self.timeout_s,
-        )
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout)[-500:]
-            raise ProviderError(
-                f"Claude OAuth chat failed for {self.model} rc={proc.returncode}: {detail}"
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=_claude_oauth_env(),
+                text=True,
+                timeout=self.timeout_s,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ProviderError("Claude OAuth chat timed out.", cause="timeout") from exc
+        if proc.returncode != 0:
+            cause = classify_provider_failure(f"{proc.stdout}\n{proc.stderr}")
+            raise ProviderError("Claude OAuth chat is unavailable.", cause=cause)
         answer = proc.stdout.strip()
         if not answer:
             raise ProviderError(f"Claude OAuth chat returned an empty answer for {self.model}.")
@@ -413,6 +421,12 @@ def _codex_oauth_env() -> dict[str, str]:
         "OPENAI_BASE_URL",
         "OPENAI_ORG_ID",
         "OPENAI_ORGANIZATION",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "DEEPSEEK_API_KEY",
+        "VOYAGE_API_KEY",
+        "COHERE_API_KEY",
     ):
         env.pop(key, None)
     return env
@@ -432,6 +446,13 @@ def _claude_oauth_env() -> dict[str, str]:
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "ANTHROPIC_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPENAI_ORG_ID",
+        "OPENAI_ORGANIZATION",
+        "DEEPSEEK_API_KEY",
+        "VOYAGE_API_KEY",
+        "COHERE_API_KEY",
         # Allow the headless `claude --print` judge to run even when the caller
         # is itself a Claude Code session (nested-session guard reads CLAUDECODE).
         "CLAUDECODE",

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from pathlib import Path
 
 from app.deps import get_settings
+from app.main import validate_effective_bind_address
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 HELPER = ROOT_DIR / "scripts" / "dante_kb_runtime_env.sh"
+LAUNCHER = ROOT_DIR / "scripts" / "start-dante-multimodal-rag.sh"
 
 
 def run_bash(script: str) -> str:
@@ -36,6 +39,9 @@ def test_kb_runtime_defaults_export_knowledge_hub_without_chroma_fallback() -> N
 
 
 def test_python_settings_default_to_knowledge_hub_without_chroma_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("VOYAGE_API_KEY", "test")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+    monkeypatch.setenv("COHERE_API_KEY", "test")
     monkeypatch.delenv("DANTEDASH_KB_BACKEND", raising=False)
     monkeypatch.delenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", raising=False)
     get_settings.cache_clear()
@@ -48,6 +54,9 @@ def test_python_settings_default_to_knowledge_hub_without_chroma_fallback(monkey
 
 
 def test_python_settings_preserve_explicit_chroma_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("VOYAGE_API_KEY", "test")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+    monkeypatch.setenv("COHERE_API_KEY", "test")
     monkeypatch.setenv("DANTEDASH_KB_BACKEND", "knowledge_hub")
     monkeypatch.setenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", "true")
     get_settings.cache_clear()
@@ -90,3 +99,33 @@ def test_truthy_helper_is_case_insensitive_and_strict() -> None:
     )
 
     assert output == "TTTTTFFFFF"
+
+
+def test_launcher_accepts_loopback_validation_only() -> None:
+    env = dict(os.environ)
+    env["DANTE_LAUNCHER_VALIDATE_ONLY"] = "true"
+    result = subprocess.run([str(LAUNCHER)], env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 0
+
+
+def test_launcher_rejects_non_loopback_bind() -> None:
+    env = dict(os.environ)
+    env.update(
+        {
+            "DANTE_LAUNCHER_VALIDATE_ONLY": "true",
+            "DANTE_MULTIMODAL_BACKEND_HOST": "0.0.0.0",
+        }
+    )
+    result = subprocess.run([str(LAUNCHER)], env=env, capture_output=True, text=True, check=False)
+    assert result.returncode == 2
+    assert "refuses non-loopback binds" in result.stderr
+
+
+def test_backend_rejects_non_loopback_effective_bind(monkeypatch) -> None:
+    monkeypatch.setenv("DANTE_MULTIMODAL_EFFECTIVE_BIND_ADDRESS", "0.0.0.0")
+    try:
+        validate_effective_bind_address()
+    except RuntimeError as exc:
+        assert "non-loopback" in str(exc)
+    else:
+        raise AssertionError("non-loopback bind should be rejected")
