@@ -125,7 +125,7 @@ def test_build_stage_a_binds_rows_documents_payloads_vectors_and_evidence() -> N
         collection,
         manifest,
         database_digest="d" * 64,
-        historical_evidence={"verified": True},
+        historical_evidence={"evidence_strength": "direct_vector_provenance_receipt"},
     )
 
     assert receipt.status == "certified"
@@ -145,12 +145,31 @@ def test_build_stage_a_fails_closed_on_wrong_dimension() -> None:
         collection,
         [asset("node-a")],
         database_digest="d" * 64,
-        historical_evidence={"verified": True},
+        historical_evidence={"evidence_strength": "direct_vector_provenance_receipt"},
     )
 
     assert receipt.status == "blocked"
     assert rows == []
     assert receipt.blockers == ("chroma_vector_contract_mismatch:node-a",)
+
+
+def test_build_stage_a_does_not_certify_indirect_provider_evidence() -> None:
+    module = load_module()
+    collection = FakeCollection(
+        [{"node_id": "node-a", "document": "alpha", "metadata": {}, "embedding": [0.25] * 1024}]
+    )
+
+    receipt, rows = module.build_stage_a(
+        collection,
+        [asset("node-a")],
+        database_digest="d" * 64,
+        historical_evidence={"evidence_strength": "indirect_specific_workspace_chain"},
+    )
+
+    assert receipt.status == "blocked"
+    assert receipt.row_count == 1
+    assert len(rows) == 1
+    assert receipt.blockers == ("chroma_vector_provenance_unverified",)
 
 
 def test_stage_b_builds_complete_no_provider_inventory(tmp_path: Path) -> None:
@@ -267,7 +286,11 @@ def test_plan_dry_run_writes_owner_only_immutable_bundles_without_mutation(tmp_p
         [{"node_id": "node-a", "document": "alpha", "metadata": {}, "embedding": [0.5] * 1024}]
     )
     monkeypatch.setattr(module, "_open_chroma_collection", lambda *_args: collection)
-    monkeypatch.setattr(module, "validate_historical_evidence", lambda *_args: {"verified": True})
+    monkeypatch.setattr(
+        module,
+        "validate_historical_evidence",
+        lambda *_args: {"evidence_strength": "direct_vector_provenance_receipt"},
+    )
     parser = module.build_parser()
     args = parser.parse_args(
         [

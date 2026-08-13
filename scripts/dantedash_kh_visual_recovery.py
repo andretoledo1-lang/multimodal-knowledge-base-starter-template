@@ -334,6 +334,8 @@ def build_stage_a(
     manifest_by_id = {str(item["node_id"]): item for item in manifest_assets}
     rows: list[dict[str, Any]] = []
     blockers: list[str] = []
+    if historical_evidence.get("evidence_strength") != "direct_vector_provenance_receipt":
+        blockers.append("chroma_vector_provenance_unverified")
     offset = 0
     page_size = 128
     while offset < int(collection.count()):
