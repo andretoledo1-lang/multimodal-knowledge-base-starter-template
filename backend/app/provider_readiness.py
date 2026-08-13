@@ -5,6 +5,7 @@ import json
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Callable, Literal
@@ -119,7 +120,6 @@ class ProviderReadinessService:
         self._lock = threading.Lock()
         self._cached: dict[str, ProviderProbe] | None = None
         self._cached_at = 0.0
-        self._cached_checked_at: str | None = None
         self._last_probe_at = 0.0
 
     def status_payload(self, *, refresh: bool = False) -> dict[str, object]:
@@ -172,19 +172,20 @@ class ProviderReadinessService:
                 (not refresh and cache_age < self.cache_ttl_s)
                 or (refresh and since_probe < self.min_probe_interval_s)
             ):
-                assert self._cached_checked_at is not None
-                return dict(self._cached), self._cached_checked_at, False
+                checked_at = next(iter(self._cached.values())).checked_at
+                return dict(self._cached), checked_at, False
 
-            self._last_probe_at = now
             checked_at = _now_iso()
-            probes = {
-                "deepseek": self._probe_deepseek(checked_at),
-                "openai_codex": self._probe_codex(checked_at),
-                "anthropic": self._probe_claude(checked_at),
-            }
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                futures = {
+                    "deepseek": executor.submit(self._probe_deepseek, checked_at),
+                    "openai_codex": executor.submit(self._probe_codex, checked_at),
+                    "anthropic": executor.submit(self._probe_claude, checked_at),
+                }
+                probes = {name: future.result() for name, future in futures.items()}
             self._cached = probes
             self._cached_at = time.monotonic()
-            self._cached_checked_at = checked_at
+            self._last_probe_at = self._cached_at
             return dict(probes), checked_at, True
 
     def _probe_deepseek(self, checked_at: str) -> ProviderProbe:
@@ -311,8 +312,6 @@ class ProviderReadinessService:
         except OSError:
             return self._unavailable("verification_unavailable", checked_at)
 
-        authenticated = False
-        malformed = False
         if json_auth_key is None:
             authenticated = proc.returncode == 0 and "logged in" in f"{proc.stdout}\n{proc.stderr}".casefold()
         else:
@@ -320,7 +319,7 @@ class ProviderReadinessService:
                 payload = json.loads(proc.stdout)
                 authenticated = proc.returncode == 0 and payload.get(json_auth_key) is True
             except (json.JSONDecodeError, AttributeError):
-                malformed = True
+                return self._unavailable("verification_unavailable", checked_at)
 
         # Raw stdout/stderr is deliberately discarded after classification.
         if authenticated:
@@ -333,8 +332,6 @@ class ProviderReadinessService:
                 checked_at=checked_at,
                 retryable=False,
             )
-        if malformed:
-            return self._unavailable("verification_unavailable", checked_at)
         return self._unavailable("auth_required", checked_at, auth_state="unauthenticated")
 
     @staticmethod

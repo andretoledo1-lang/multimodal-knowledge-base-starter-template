@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 from dataclasses import replace
 
 import httpx
@@ -96,6 +97,23 @@ def test_status_cache_and_refresh_rate_limit_cli_probes(monkeypatch) -> None:
         row["auth"]["checked_at"] == initial["checked_at"]
         for row in cached_refresh["providers"]
     )
+
+
+def test_provider_families_are_probed_concurrently(monkeypatch) -> None:
+    service = ProviderReadinessService(_config(), http_get=_http_get)
+    barrier = threading.Barrier(3)
+
+    def parallel_probe(checked_at: str):
+        barrier.wait(timeout=1)
+        return service._unavailable("verification_unavailable", checked_at)
+
+    monkeypatch.setattr(service, "_probe_deepseek", parallel_probe)
+    monkeypatch.setattr(service, "_probe_codex", parallel_probe)
+    monkeypatch.setattr(service, "_probe_claude", parallel_probe)
+
+    payload = service.status_payload()
+
+    assert payload["status"] == "verified"
 
 
 def test_runtime_failure_overlay_is_redacted_and_clearable(monkeypatch) -> None:

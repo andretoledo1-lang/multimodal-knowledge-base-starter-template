@@ -56,7 +56,7 @@ interface UseChatOptions {
   projectId?: string | null;
   threadId?: string | null;
   onCompleted?: () => void;
-  onProviderFailure?: (cause: string | null) => void;
+  onProviderFailure?: () => void;
 }
 
 interface SourcesPayload {
@@ -200,7 +200,7 @@ export function useChat(options: UseChatOptions = {}) {
             streaming: false,
             error: msg,
           }));
-          onProviderFailureRef.current?.(payload.cause ?? null);
+          if (payload.cause) onProviderFailureRef.current?.();
           toast.error(`Chat error: ${msg}`);
         }
       }

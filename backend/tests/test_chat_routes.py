@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from app.kb_backends import KbBackendUnavailable
+from app.routes import chat as chat_module
 from app.routes.chat import _stream
 from app.schemas import ChatRequest
 from app.chat_store import ChatStore
@@ -30,7 +31,11 @@ def test_chat_stream_redacts_kb_backend_errors() -> None:
     assert "token" not in payload
 
 
-def test_no_result_answer_is_emitted_before_sources_and_done(tmp_path) -> None:
+def test_no_result_answer_is_emitted_before_sources_and_done(
+    tmp_path, monkeypatch
+) -> None:
+    cleared: list[str] = []
+    monkeypatch.setattr(chat_module, "clear_runtime_failure", cleared.append)
     frames = list(
         _stream(
             EmptyKb(),
@@ -43,6 +48,7 @@ def test_no_result_answer_is_emitted_before_sources_and_done(tmp_path) -> None:
     assert "event: sources" in frames[1]
     assert '"sources": []' in frames[1]
     assert frames[2] == "event: done\ndata: {}\n\n"
+    assert cleared == ["deepseek-v4-pro"]
 
 
 def test_no_result_thread_persists_exact_emitted_answer(tmp_path) -> None:

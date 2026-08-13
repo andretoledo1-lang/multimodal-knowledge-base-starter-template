@@ -33,4 +33,39 @@ describe("useChat SSE completion", () => {
     });
     expect(result.current.isStreaming).toBe(false);
   });
+
+  it("refreshes provider status only for classified provider errors", async () => {
+    const onProviderFailure = vi.fn();
+    const responseFor = (data: object) => ({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              `event: error\ndata: ${JSON.stringify(data)}\n\nevent: done\ndata: {}\n\n`,
+            ),
+          );
+          controller.close();
+        },
+      }),
+    });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(responseFor({ message: "KB unavailable" }))
+      .mockResolvedValueOnce(
+        responseFor({ message: "Provider unavailable", cause: "auth_required" }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useChat({ onProviderFailure }));
+
+    await act(async () => {
+      await result.current.send("First");
+    });
+    expect(onProviderFailure).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await result.current.send("Second");
+    });
+    expect(onProviderFailure).toHaveBeenCalledTimes(1);
+  });
 });

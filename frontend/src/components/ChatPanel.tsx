@@ -642,7 +642,7 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
     (status) => status.available === false,
   );
   const hasRefreshableProvider = unavailableProviders.some(
-    (status) => status.retryable || status.cause === "auth_required",
+    (status) => status.retryable,
   );
   const contextGroups = useMemo(
     () => collectAssistantContextGroups(messages),
