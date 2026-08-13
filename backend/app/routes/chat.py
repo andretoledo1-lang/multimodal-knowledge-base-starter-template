@@ -37,11 +37,35 @@ def _sse(event: str | None, data: str) -> str:
     return f"{prefix}data: {data}\n\n"
 
 
+def _provider_error_frames(model_id: str, exc: ProviderError) -> Iterator[str]:
+    cause = classify_runtime_exception(exc)
+    record_runtime_failure(model_id, cause)
+    logger.warning("Chat provider failed model=%s cause=%s", model_id, cause)
+    yield _sse(
+        "error",
+        json.dumps(
+            {
+                "message": f"Selected chat mode {model_id} is currently unavailable.",
+                "cause": cause,
+            }
+        ),
+    )
+    yield _sse("done", "{}")
+
+
 def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
     token_count = 0
     final: GroundedAnswer | None = None
     persisted_user_id: str | None = None
     conversation_context = ""
+
+    try:
+        ensure_chat_model_enabled = getattr(kb, "ensure_chat_model_enabled", None)
+        if callable(ensure_chat_model_enabled):
+            ensure_chat_model_enabled(req.chat_model)
+    except ProviderError as exc:
+        yield from _provider_error_frames(req.chat_model, exc)
+        return
 
     if req.thread_id:
         conversation_context = _build_conversation_context(store, req.thread_id)
@@ -75,19 +99,7 @@ def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
             else:
                 final = chunk
     except ProviderError as exc:
-        cause = classify_runtime_exception(exc)
-        record_runtime_failure(req.chat_model, cause)
-        logger.warning("Chat provider failed model=%s cause=%s", req.chat_model, cause)
-        yield _sse(
-            "error",
-            json.dumps(
-                {
-                    "message": f"Selected chat mode {req.chat_model} is currently unavailable.",
-                    "cause": cause,
-                }
-            ),
-        )
-        yield _sse("done", "{}")
+        yield from _provider_error_frames(req.chat_model, exc)
         return
     except KbBackendUnavailable:
         logger.exception("Chat knowledge base backend unavailable")

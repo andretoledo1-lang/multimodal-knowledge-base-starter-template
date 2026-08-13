@@ -117,6 +117,35 @@ def test_operator_disabled_is_configuration_state_not_runtime_overlay(monkeypatc
     assert row["cause"] == "capacity_unverified"
 
 
+def test_operator_disabled_config_wins_over_stale_runtime_overlay(monkeypatch) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Logged in",
+            stderr="",
+        ),
+    )
+    model_id = "claude-sonnet-4-6-oauth"
+    record_runtime_failure(model_id, "billing_required")
+    try:
+        row = next(
+            item
+            for item in ProviderReadinessService(
+                _config(claude_enabled=False),
+                http_get=_http_get,
+            ).status_payload()["providers"]
+            if item["model_id"] == model_id
+        )
+        assert row["available"] is False
+        assert row["cause"] == "operator_disabled"
+        assert row["retryable"] is False
+    finally:
+        clear_runtime_failure(model_id)
+
+
 def test_status_cache_and_refresh_rate_limit_cli_probes(monkeypatch) -> None:
     calls = 0
 

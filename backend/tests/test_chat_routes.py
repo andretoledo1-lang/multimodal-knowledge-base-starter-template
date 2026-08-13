@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.chat_models import CHAT_MODEL_CLAUDE_OPUS, CHAT_MODEL_CLAUDE_SONNET
+from app.deps import get_chat_store, get_kb_gateway
 from app.kb_backends import KbBackendUnavailable
 from app.kb import SearchResult
+from app.main import app
 from app.providers import ProviderError
 from app.rag import GroundedAnswer
 from app.routes import chat as chat_module
@@ -51,20 +54,42 @@ def test_chat_stream_redacts_kb_backend_errors() -> None:
 
 
 @pytest.mark.parametrize("chat_model", [CHAT_MODEL_CLAUDE_SONNET, CHAT_MODEL_CLAUDE_OPUS])
-def test_operator_disabled_claude_fails_before_retrieval(chat_model: str, tmp_path) -> None:
+def test_operator_disabled_claude_fails_before_thread_mutation_and_retrieval(
+    chat_model: str,
+    tmp_path,
+) -> None:
     kb = OperatorDisabledClaudeKb()
-
-    payload = "".join(
-        _stream(
-            kb,
-            ChatRequest(question="x", chat_model=chat_model),
-            ChatStore(tmp_path / f"{chat_model}.sqlite"),
-        )
+    store = ChatStore(tmp_path / f"{chat_model}.sqlite")
+    project = store.create_project(name="Dante")
+    thread = store.create_thread(
+        project_id=project["id"],
+        chat_model="deepseek-v4-pro",
+        top_k=3,
     )
+    before = store.get_thread_detail(thread["id"])
+    app.dependency_overrides[get_kb_gateway] = lambda: kb
+    app.dependency_overrides[get_chat_store] = lambda: store
+    try:
+        response = TestClient(app, client=("127.0.0.1", 50000)).post(
+            "/api/chat",
+            headers={"Host": "localhost"},
+            json={
+                "question": "x",
+                "chat_model": chat_model,
+                "project_id": project["id"],
+                "thread_id": thread["id"],
+                "top_k": 9,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
 
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
     assert kb.search_calls == 0
-    assert '"cause": "operator_disabled"' in payload
-    assert "event: done" in payload
+    assert '"cause": "operator_disabled"' in response.text
+    assert "event: done" in response.text
+    assert store.get_thread_detail(thread["id"]) == before
 
 
 def test_no_result_answer_is_emitted_before_sources_and_done(

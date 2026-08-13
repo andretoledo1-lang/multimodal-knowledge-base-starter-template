@@ -131,7 +131,11 @@ class ProviderReadinessService:
         providers: list[dict[str, object]] = []
         for profile in active_chat_profiles():
             probe = probes[profile.provider_family]
-            overlay = _active_overlay(profile.public_id)
+            if probe.cause == "operator_disabled":
+                clear_runtime_failure(profile.public_id)
+                overlay = None
+            else:
+                overlay = _active_overlay(profile.public_id)
             if (
                 refresh
                 and probed_now
