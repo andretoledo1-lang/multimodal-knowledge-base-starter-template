@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from app.chat_models import CHAT_MODEL_CLAUDE_OPUS, CHAT_MODEL_CLAUDE_SONNET
 from app.kb_backends import KbBackendUnavailable
 from app.kb import SearchResult
 from app.providers import ProviderError
@@ -25,6 +28,19 @@ class EmptyKb:
         raise AssertionError("No-result chat must not call a provider")
 
 
+class OperatorDisabledClaudeKb:
+    def __init__(self) -> None:
+        self.search_calls = 0
+
+    def ensure_chat_model_enabled(self, chat_model: str) -> None:
+        if chat_model in {CHAT_MODEL_CLAUDE_SONNET, CHAT_MODEL_CLAUDE_OPUS}:
+            raise ProviderError("Claude is temporarily disabled.", cause="operator_disabled")
+
+    def search_text(self, *_args, **_kwargs):
+        self.search_calls += 1
+        raise AssertionError("Disabled Claude requests must fail before retrieval")
+
+
 def test_chat_stream_redacts_kb_backend_errors() -> None:
     frames = list(_stream(FailingKb(), ChatRequest(question="x"), store=object()))
     payload = "".join(frames)
@@ -32,6 +48,23 @@ def test_chat_stream_redacts_kb_backend_errors() -> None:
     assert "Knowledge base backend unavailable." in payload
     assert "/Users/vidigal/private" not in payload
     assert "token" not in payload
+
+
+@pytest.mark.parametrize("chat_model", [CHAT_MODEL_CLAUDE_SONNET, CHAT_MODEL_CLAUDE_OPUS])
+def test_operator_disabled_claude_fails_before_retrieval(chat_model: str, tmp_path) -> None:
+    kb = OperatorDisabledClaudeKb()
+
+    payload = "".join(
+        _stream(
+            kb,
+            ChatRequest(question="x", chat_model=chat_model),
+            ChatStore(tmp_path / f"{chat_model}.sqlite"),
+        )
+    )
+
+    assert kb.search_calls == 0
+    assert '"cause": "operator_disabled"' in payload
+    assert "event: done" in payload
 
 
 def test_no_result_answer_is_emitted_before_sources_and_done(

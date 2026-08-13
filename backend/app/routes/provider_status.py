@@ -70,6 +70,7 @@ def get_provider_readiness_service() -> ProviderReadinessService:
             claude_sonnet_model=settings.claude_sonnet_model,
             claude_opus_model=settings.claude_opus_model,
             claude_haiku_model=settings.claude_haiku_model,
+            claude_enabled=settings.dantedash_claude_enabled,
         )
     )
 

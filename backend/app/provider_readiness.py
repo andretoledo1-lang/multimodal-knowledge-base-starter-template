@@ -42,6 +42,7 @@ class ProviderProbeConfig:
     claude_sonnet_model: str
     claude_opus_model: str
     claude_haiku_model: str
+    claude_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -71,6 +72,8 @@ def _now_iso() -> str:
 
 def record_runtime_failure(model_id: str, cause: ProviderCause) -> None:
     """Record only a safe cause code; raw provider output never enters state."""
+    if cause == "operator_disabled":
+        return
     ttl = {
         "rate_limited": 30.0,
         "timeout": 60.0,
@@ -274,6 +277,13 @@ class ProviderReadinessService:
         )
 
     def _probe_claude(self, checked_at: str) -> ProviderProbe:
+        if not self.config.claude_enabled:
+            return self._unavailable(
+                "operator_disabled",
+                checked_at,
+                capacity_state="unavailable",
+                retryable=False,
+            )
         sonnet_profile = get_chat_profile(CHAT_MODEL_CLAUDE_SONNET)
         opus_profile = get_chat_profile(CHAT_MODEL_CLAUDE_OPUS)
         expected_worker_model = sonnet_profile.worker.model if sonnet_profile.worker else None
@@ -364,6 +374,7 @@ class ProviderReadinessService:
 def classify_runtime_exception(exc: BaseException) -> ProviderCause:
     cause = getattr(exc, "cause", None)
     if isinstance(cause, str) and cause in {
+        "operator_disabled",
         "auth_required",
         "oauth_expired",
         "billing_required",

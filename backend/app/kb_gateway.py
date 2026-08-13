@@ -5,15 +5,19 @@ import logging
 from pathlib import Path
 from typing import Any, Callable
 
+from .chat_models import (
+    CHAT_MODEL_CLAUDE_OPUS,
+    CHAT_MODEL_CLAUDE_SONNET,
+)
 from .kb import KnowledgeBase, ProgressCallback, SearchResult, _noop
 from .kb_backends import (
     ChromaKbBackend,
-    KbBackend,
     KbBackendUnavailable,
     KbWriteDisabled,
     KnowledgeHubKbBackend,
     PreviewLookup,
 )
+from .providers import ProviderError
 
 logger = logging.getLogger("kb.gateway")
 VALID_BACKEND_MODES = {"chroma", "dual", "knowledge_hub"}
@@ -29,6 +33,7 @@ class KbGateway:
         chroma: ChromaKbBackend | Callable[[], ChromaKbBackend],
         knowledge_hub: KnowledgeHubKbBackend,
         chroma_fallback_enabled: bool = True,
+        claude_enabled: bool = False,
     ) -> None:
         if mode not in VALID_BACKEND_MODES:
             raise ValueError(f"Invalid DANTEDASH_KB_BACKEND={mode!r}")
@@ -37,6 +42,7 @@ class KbGateway:
         self._chroma_instance: Any | None = None if callable(chroma) else chroma
         self.knowledge_hub = knowledge_hub
         self.chroma_fallback_enabled = chroma_fallback_enabled
+        self.claude_enabled = claude_enabled
 
     @property
     def chroma(self) -> ChromaKbBackend:
@@ -52,26 +58,42 @@ class KbGateway:
 
     @property
     def claude_premium_repair_cap(self) -> int:
+        self.ensure_chat_model_enabled(CHAT_MODEL_CLAUDE_OPUS)
         return self.chroma.kb.claude_premium_repair_cap
 
     @property
     def claude_opus_chat_client(self) -> Any:
+        self.ensure_chat_model_enabled(CHAT_MODEL_CLAUDE_OPUS)
         return self.chroma.kb.claude_opus_chat_client
 
     @property
     def claude_sonnet_chief_client(self) -> Any:
+        self.ensure_chat_model_enabled(CHAT_MODEL_CLAUDE_OPUS)
         return self.chroma.kb.claude_sonnet_chief_client
 
     @property
     def claude_haiku_worker_client(self) -> Any:
+        self.ensure_chat_model_enabled(CHAT_MODEL_CLAUDE_OPUS)
         return self.chroma.kb.claude_haiku_worker_client
 
     @property
     def claude_opus_judge_client(self) -> Any:
+        self.ensure_chat_model_enabled(CHAT_MODEL_CLAUDE_OPUS)
         return self.chroma.kb.claude_opus_judge_client
 
     def chat_client_for_model(self, chat_model: str) -> Any:
+        self.ensure_chat_model_enabled(chat_model)
         return self.chroma.kb.chat_client_for_model(chat_model)
+
+    def ensure_chat_model_enabled(self, chat_model: str) -> None:
+        if not self.claude_enabled and chat_model in {
+            CHAT_MODEL_CLAUDE_SONNET,
+            CHAT_MODEL_CLAUDE_OPUS,
+        }:
+            raise ProviderError(
+                "Claude is temporarily disabled by the operator.",
+                cause="operator_disabled",
+            )
 
     @property
     def is_knowledge_hub_primary(self) -> bool:

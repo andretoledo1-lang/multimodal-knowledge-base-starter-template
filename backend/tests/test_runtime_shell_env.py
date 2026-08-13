@@ -38,17 +38,29 @@ def test_kb_runtime_defaults_export_knowledge_hub_without_chroma_fallback() -> N
     assert output == "knowledge_hub false"
 
 
+def test_runtime_defaults_disable_claude_unless_operator_enables_it() -> None:
+    output = source_helper(
+        "unset DANTEDASH_CLAUDE_ENABLED; "
+        "dante_export_kb_runtime_defaults; "
+        'printf "%s" "$DANTEDASH_CLAUDE_ENABLED"'
+    )
+
+    assert output == "false"
+
+
 def test_python_settings_default_to_knowledge_hub_without_chroma_fallback(monkeypatch) -> None:
     monkeypatch.setenv("VOYAGE_API_KEY", "test")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
     monkeypatch.setenv("COHERE_API_KEY", "test")
     monkeypatch.delenv("DANTEDASH_KB_BACKEND", raising=False)
     monkeypatch.delenv("DANTEDASH_CHROMA_FALLBACK_ENABLED", raising=False)
+    monkeypatch.delenv("DANTEDASH_CLAUDE_ENABLED", raising=False)
     get_settings.cache_clear()
     try:
         settings = get_settings()
         assert settings.dantedash_kb_backend == "knowledge_hub"
         assert settings.dantedash_chroma_fallback_enabled is False
+        assert settings.dantedash_claude_enabled is False
     finally:
         get_settings.cache_clear()
 
@@ -68,6 +80,18 @@ def test_python_settings_preserve_explicit_chroma_fallback(monkeypatch) -> None:
         get_settings.cache_clear()
 
 
+def test_python_settings_preserve_explicit_claude_enable(monkeypatch) -> None:
+    monkeypatch.setenv("VOYAGE_API_KEY", "test")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+    monkeypatch.setenv("COHERE_API_KEY", "test")
+    monkeypatch.setenv("DANTEDASH_CLAUDE_ENABLED", "true")
+    get_settings.cache_clear()
+    try:
+        assert get_settings().dantedash_claude_enabled is True
+    finally:
+        get_settings.cache_clear()
+
+
 def test_kb_runtime_defaults_preserve_explicit_operator_values() -> None:
     output = source_helper(
         "export DANTEDASH_KB_BACKEND=chroma; "
@@ -77,6 +101,16 @@ def test_kb_runtime_defaults_preserve_explicit_operator_values() -> None:
     )
 
     assert output == "chroma false"
+
+
+def test_runtime_defaults_preserve_explicit_claude_enable() -> None:
+    output = source_helper(
+        "export DANTEDASH_CLAUDE_ENABLED=true; "
+        "dante_export_kb_runtime_defaults; "
+        'printf "%s" "$DANTEDASH_CLAUDE_ENABLED"'
+    )
+
+    assert output == "true"
 
 
 def test_default_chroma_fallback_matches_backend_mode() -> None:

@@ -18,7 +18,7 @@ from app.provider_readiness import (
 from app.routes.provider_status import get_provider_readiness_service
 
 
-def _config() -> ProviderProbeConfig:
+def _config(*, claude_enabled: bool = True) -> ProviderProbeConfig:
     return ProviderProbeConfig(
         deepseek_api_key="secret-not-for-response",
         deepseek_base_url="https://deepseek.test",
@@ -29,6 +29,7 @@ def _config() -> ProviderProbeConfig:
         claude_sonnet_model="claude-sonnet-4-6",
         claude_opus_model="claude-opus-4-8",
         claude_haiku_model="claude-haiku-4-5",
+        claude_enabled=claude_enabled,
     )
 
 
@@ -71,6 +72,49 @@ def test_readiness_separates_metadata_capacity_from_cli_auth(monkeypatch) -> Non
     assert "private-auth-url" not in str(payload)
     assert all("OPENAI_API_KEY" not in env for env in seen_envs)
     assert all("ANTHROPIC_API_KEY" not in env for env in seen_envs)
+
+
+def test_operator_disabled_claude_is_unavailable_without_invoking_cli(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="Logged in", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    payload = ProviderReadinessService(
+        _config(claude_enabled=False),
+        http_get=_http_get,
+    ).status_payload()
+    claude_rows = [row for row in payload["providers"] if row["provider_family"] == "anthropic"]
+
+    assert len(claude_rows) == 2
+    assert all(row["available"] is False for row in claude_rows)
+    assert all(row["cause"] == "operator_disabled" for row in claude_rows)
+    assert all(row["retryable"] is False for row in claude_rows)
+    assert all(command[0] != "claude" for command in commands)
+
+
+def test_operator_disabled_is_configuration_state_not_runtime_overlay(monkeypatch) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="Logged in" if command[0] == "codex" else '{"loggedIn": true}',
+            stderr="",
+        ),
+    )
+    record_runtime_failure("claude-sonnet-4-6-oauth", "operator_disabled")
+    row = next(
+        item
+        for item in ProviderReadinessService(_config(), http_get=_http_get).status_payload()["providers"]
+        if item["model_id"] == "claude-sonnet-4-6-oauth"
+    )
+
+    assert row["available"] is True
+    assert row["cause"] == "capacity_unverified"
 
 
 def test_status_cache_and_refresh_rate_limit_cli_probes(monkeypatch) -> None:

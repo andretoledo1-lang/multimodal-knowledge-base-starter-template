@@ -166,6 +166,7 @@ class KnowledgeBase:
         claude_oauth_timeout_s: float = 900.0,
         claude_oauth_premium_timeout_s: float = 1200.0,
         claude_premium_repair_cap: int = 1,
+        claude_enabled: bool = False,
         cohere_rerank_model: str = "rerank-v4.0-pro",
         enable_rerank: bool = True,
     ):
@@ -177,6 +178,7 @@ class KnowledgeBase:
         self.upload_dir = Path(upload_dir)
         self.embed_model_name = embed_model
         self.embed_dim = embed_dim
+        self.claude_enabled = claude_enabled
 
         self.persist_dir.mkdir(exist_ok=True, parents=True)
         self.upload_dir.mkdir(exist_ok=True, parents=True)
@@ -247,6 +249,7 @@ class KnowledgeBase:
         self.text_splitter = SentenceSplitter(chunk_size=500, chunk_overlap=50)
 
     def chat_client_for_model(self, chat_model: ChatModelId):
+        self.ensure_chat_model_enabled(chat_model)
         if chat_model == CHAT_MODEL_DEEPSEEK:
             return self.chat_client
         if chat_model == CHAT_MODEL_CODEX_OAUTH:
@@ -256,6 +259,16 @@ class KnowledgeBase:
         if chat_model == CHAT_MODEL_CLAUDE_OPUS:
             return self.claude_opus_chat_client
         raise ProviderError(f"Unsupported chat model: {chat_model}")
+
+    def ensure_chat_model_enabled(self, chat_model: ChatModelId) -> None:
+        if not self.claude_enabled and chat_model in {
+            CHAT_MODEL_CLAUDE_SONNET,
+            CHAT_MODEL_CLAUDE_OPUS,
+        }:
+            raise ProviderError(
+                "Claude is temporarily disabled by the operator.",
+                cause="operator_disabled",
+            )
 
     # ===== Embedding primitives =====
 

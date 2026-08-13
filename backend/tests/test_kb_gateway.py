@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import pytest
 
+from app.chat_models import (
+    CHAT_MODEL_CLAUDE_OPUS,
+    CHAT_MODEL_CLAUDE_SONNET,
+    CHAT_MODEL_CODEX_OAUTH,
+    CHAT_MODEL_DEEPSEEK,
+)
 from app.kb import SearchResult
 from app.kb_backends import KbBackendUnavailable, KbWriteDisabled, KnowledgeHubKbBackend
 from app.kb_gateway import KbGateway
+from app.providers import ProviderError
 
 
 class FakeBackend:
@@ -61,6 +68,31 @@ class FakeBackend:
 
     def clear(self) -> None:
         self.cleared = True
+
+
+def test_gateway_operator_flag_blocks_only_claude_without_loading_chroma() -> None:
+    chroma_loaded = False
+
+    def load_chroma():
+        nonlocal chroma_loaded
+        chroma_loaded = True
+        return FakeBackend()
+
+    gateway = KbGateway(
+        mode="knowledge_hub",
+        chroma=load_chroma,
+        knowledge_hub=FakeBackend(),
+        claude_enabled=False,
+    )
+
+    gateway.ensure_chat_model_enabled(CHAT_MODEL_DEEPSEEK)
+    gateway.ensure_chat_model_enabled(CHAT_MODEL_CODEX_OAUTH)
+    for chat_model in (CHAT_MODEL_CLAUDE_SONNET, CHAT_MODEL_CLAUDE_OPUS):
+        with pytest.raises(ProviderError) as exc_info:
+            gateway.ensure_chat_model_enabled(chat_model)
+        assert exc_info.value.cause == "operator_disabled"
+
+    assert chroma_loaded is False
 
 
 class FakeKnowledgeHubClient:

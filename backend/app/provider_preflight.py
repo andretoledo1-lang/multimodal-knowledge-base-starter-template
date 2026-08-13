@@ -7,6 +7,7 @@ from typing import Literal
 
 ProviderCause = Literal[
     "ready",
+    "operator_disabled",
     "auth_required",
     "oauth_expired",
     "billing_required",
@@ -60,6 +61,7 @@ def recovery_hint_for_cause(cause: ProviderCause) -> str:
     """Return a fixed operator hint without echoing provider output."""
     return {
         "ready": "Provider is ready.",
+        "operator_disabled": "This provider is temporarily disabled by the operator.",
         "auth_required": "Sign in to this provider, then refresh provider status.",
         "oauth_expired": "Sign in to this provider again, then refresh provider status.",
         "billing_required": "Review provider billing, then refresh provider status.",

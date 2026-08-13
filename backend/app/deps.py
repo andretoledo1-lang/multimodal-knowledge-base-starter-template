@@ -44,6 +44,7 @@ class Settings:
     claude_oauth_timeout_s: float
     claude_oauth_premium_timeout_s: float
     claude_premium_repair_cap: int
+    dantedash_claude_enabled: bool
     cohere_rerank_model: str
     enable_cohere_rerank: bool
     kb_persist_dir: Path
@@ -108,6 +109,8 @@ def get_settings() -> Settings:
         claude_oauth_timeout_s=float(os.getenv("CLAUDE_OAUTH_TIMEOUT_S", "900")),
         claude_oauth_premium_timeout_s=float(os.getenv("CLAUDE_OAUTH_PREMIUM_TIMEOUT_S", "1200")),
         claude_premium_repair_cap=int(os.getenv("CLAUDE_PREMIUM_REPAIR_CAP", "1")),
+        dantedash_claude_enabled=os.getenv("DANTEDASH_CLAUDE_ENABLED", "false").strip().lower()
+        in {"1", "true", "yes", "on"},
         cohere_rerank_model=os.getenv("COHERE_RERANK_MODEL", "rerank-v4.0-pro"),
         enable_cohere_rerank=enable_cohere_rerank,
         kb_persist_dir=_setting_path("KB_PERSIST_DIR", BASE_DIR / "chroma_db"),
@@ -173,6 +176,7 @@ def get_kb() -> KnowledgeBase:
         claude_oauth_timeout_s=s.claude_oauth_timeout_s,
         claude_oauth_premium_timeout_s=s.claude_oauth_premium_timeout_s,
         claude_premium_repair_cap=s.claude_premium_repair_cap,
+        claude_enabled=s.dantedash_claude_enabled,
         cohere_rerank_model=s.cohere_rerank_model,
         enable_rerank=s.enable_cohere_rerank,
     )
@@ -197,6 +201,7 @@ def get_kb_gateway() -> KbGateway:
         chroma=lambda: ChromaKbBackend(get_kb()),
         knowledge_hub=KnowledgeHubKbBackend(get_knowledge_hub_client()),
         chroma_fallback_enabled=s.dantedash_chroma_fallback_enabled,
+        claude_enabled=s.dantedash_claude_enabled,
     )
 
 

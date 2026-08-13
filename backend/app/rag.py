@@ -197,6 +197,10 @@ def answer_with_vision(
     """
     on_progress = on_progress or (lambda _e: None)
 
+    ensure_chat_model_enabled = getattr(kb, "ensure_chat_model_enabled", None)
+    if callable(ensure_chat_model_enabled):
+        ensure_chat_model_enabled(chat_model)
+
     # 1. Retrieve
     results = kb.search_text(
         question,
