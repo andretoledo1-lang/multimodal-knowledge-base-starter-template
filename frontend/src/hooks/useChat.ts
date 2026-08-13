@@ -1,14 +1,37 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { SearchResult } from "@/lib/api";
 import { parseSSE } from "@/lib/sse";
 
+export const CHAT_MODELS = [
+  {
+    id: "deepseek-v4-pro",
+    label: "deepseek - deepseek-v4-pro",
+  },
+  {
+    id: "codex-gpt-5.5-oauth",
+    label: "openai/codex - gpt-5.5 OAuth",
+  },
+  {
+    id: "claude-sonnet-4-6-oauth",
+    label: "claude - sonnet-4.6 OAuth",
+  },
+  {
+    id: "claude-opus-4-8-oauth",
+    label: "claude - opus-4.8 OAuth Premium",
+  },
+] as const;
+
+export type ChatModelId = (typeof CHAT_MODELS)[number]["id"];
+
 export interface ChatUserMessage {
+  id?: string;
   role: "user";
   content: string;
 }
 
 export interface ChatAssistantMessage {
+  id?: string;
   role: "assistant";
   content: string;
   sources?: SearchResult[];
@@ -23,17 +46,50 @@ interface ChatOptions {
   topK?: number;
   modalityFilter?: string[] | null;
   maxImages?: number;
+  model?: ChatModelId;
+  projectId?: string | null;
+  threadId?: string | null;
+}
+
+interface UseChatOptions {
+  initialMessages?: ChatMessage[];
+  projectId?: string | null;
+  threadId?: string | null;
+  onCompleted?: () => void;
+  onProviderFailure?: () => void;
 }
 
 interface SourcesPayload {
   sources: SearchResult[];
   visual_attachments: number;
+  citation_validation?: {
+    ok: boolean;
+    source_count: number;
+    cited_source_numbers: number[];
+    invalid_source_numbers: number[];
+    missing_citations: boolean;
+  };
 }
 
-export function useChat() {
+export function useChat(options: UseChatOptions = {}) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const onCompletedRef = useRef(options.onCompleted);
+  const onProviderFailureRef = useRef(options.onProviderFailure);
+
+  useEffect(() => {
+    onCompletedRef.current = options.onCompleted;
+  }, [options.onCompleted]);
+
+  useEffect(() => {
+    onProviderFailureRef.current = options.onProviderFailure;
+  }, [options.onProviderFailure]);
+
+  useEffect(() => {
+    if (!options.initialMessages || isStreaming) return;
+    setMessages(options.initialMessages);
+  }, [options.initialMessages, isStreaming]);
 
   const reset = useCallback(() => {
     abortRef.current?.abort();
@@ -65,6 +121,8 @@ export function useChat() {
 
     const ctrl = new AbortController();
     abortRef.current = ctrl;
+    let completed = false;
+    let hasStreamError = false;
 
     setMessages((prev) => [
       ...prev,
@@ -94,6 +152,9 @@ export function useChat() {
           top_k: opts.topK ?? 5,
           modality_filter: opts.modalityFilter ?? null,
           max_images: opts.maxImages ?? 6,
+          chat_model: opts.model ?? "deepseek-v4-pro",
+          project_id: opts.projectId ?? options.projectId ?? null,
+          thread_id: opts.threadId ?? options.threadId ?? null,
         }),
         signal: ctrl.signal,
       });
@@ -118,17 +179,38 @@ export function useChat() {
             visualAttachments: payload.visual_attachments,
           }));
         } else if (frame.event === "done") {
-          updateAssistant((m) => ({ ...m, streaming: false }));
+          completed = true;
+          updateAssistant((m) => ({
+            ...m,
+            content:
+              m.content || m.error
+                ? m.content
+                : "Chat completed without an answer. Please retry.",
+            streaming: false,
+          }));
         } else if (frame.event === "error") {
-          const payload = safeJsonParse<{ message?: string }>(frame.data, {});
+          hasStreamError = true;
+          const payload = safeJsonParse<{ message?: string; cause?: string }>(
+            frame.data,
+            {},
+          );
           const msg = payload.message ?? "Stream error";
           updateAssistant((m) => ({
             ...m,
             streaming: false,
             error: msg,
           }));
+          if (payload.cause) onProviderFailureRef.current?.();
           toast.error(`Chat error: ${msg}`);
         }
+      }
+      if (!completed && !hasStreamError && !ctrl.signal.aborted) {
+        updateAssistant((m) => ({
+          ...m,
+          content: m.content || "Chat ended without an answer. Please retry.",
+          streaming: false,
+          error: "The chat stream ended before completion.",
+        }));
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") {
@@ -145,8 +227,9 @@ export function useChat() {
     } finally {
       if (abortRef.current === ctrl) abortRef.current = null;
       setIsStreaming(false);
+      if (completed && !hasStreamError) onCompletedRef.current?.();
     }
-  }, []);
+  }, [options.projectId, options.threadId]);
 
   return { messages, isStreaming, send, reset, stop };
 }
