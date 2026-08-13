@@ -1,4 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -100,8 +106,18 @@ describe("ChatPanel provider readiness", () => {
     await waitFor(() =>
       expect(modelSelect).toHaveValue("claude-sonnet-4-6-oauth"),
     );
+    const providerRegion = screen.getByRole("region", {
+      name: /Provider availability/i,
+    });
     expect(
-      screen.getByText(/claude - sonnet-4.6 OAuth: unavailable/i),
+      within(providerRegion).getByText(
+        /claude - sonnet-4.6 OAuth: auth required.*Sign in/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(providerRegion).getByText(
+        /claude - opus-4.8 OAuth Premium: auth required.*Sign in/i,
+      ),
     ).toBeInTheDocument();
 
     await user.type(screen.getByPlaceholderText("Ask a question..."), "Hello");
@@ -129,5 +145,30 @@ describe("ChatPanel provider readiness", () => {
     expect(
       await screen.findByText(/authenticated; execution capacity is not smoke-tested/i),
     ).toBeInTheDocument();
+  });
+
+  it("does not offer retry when every unavailable cause is nonretryable", async () => {
+    const payload = providerPayload(true);
+    payload.providers[0] = {
+      ...payload.providers[0],
+      state: "unavailable",
+      available: false,
+      cause: "billing_required",
+      retryable: false,
+      recovery_hint: "Review provider billing, then refresh provider status.",
+      capacity: {
+        state: "unavailable",
+        checked_at: payload.checked_at,
+      },
+    };
+    vi.spyOn(api, "chatProviders").mockResolvedValue(payload);
+    render(<ChatPanel workspace={workspace("deepseek-v4-pro")} />);
+
+    expect(
+      await screen.findByText(/deepseek - deepseek-v4-pro: billing required/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Refresh provider status/i }),
+    ).not.toBeInTheDocument();
   });
 });

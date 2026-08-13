@@ -4,6 +4,7 @@ import json
 
 import pytest
 from fastapi import HTTPException
+from starlette.requests import Request
 
 from app.chat_models import CHAT_MODEL_DEEPSEEK
 from app.chat_store import ChatStore
@@ -53,6 +54,20 @@ class FakeKB:
 
 def make_store(tmp_path) -> ChatStore:
     return ChatStore(tmp_path / "chat.sqlite")
+
+
+def make_request(client_host: str = "127.0.0.1") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/chat",
+            "headers": [(b"host", b"localhost")],
+            "client": (client_host, 50000),
+            "server": ("127.0.0.1", 8035),
+            "scheme": "http",
+        }
+    )
 
 
 def parse_sse_frames(frames: list[str]) -> list[tuple[str, object]]:
@@ -142,8 +157,21 @@ def test_chat_rejects_thread_project_mismatch(tmp_path) -> None:
                 project_id=other["id"],
                 thread_id=thread["id"],
             ),
+            request=make_request(),
             kb=FakeKB(),
             store=store,
         )
 
     assert exc.value.status_code == 400
+
+
+def test_chat_rejects_spoofed_loopback_host_from_remote_client(tmp_path) -> None:
+    with pytest.raises(HTTPException) as exc:
+        chat(
+            ChatRequest(question="What?"),
+            request=make_request("203.0.113.17"),
+            kb=FakeKB(),
+            store=make_store(tmp_path),
+        )
+
+    assert exc.value.status_code == 403

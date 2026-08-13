@@ -3,7 +3,40 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from app.providers import ClaudeOAuthChatClient, CodexOAuthChatClient
+import httpx
+import pytest
+
+from app.providers import (
+    ClaudeOAuthChatClient,
+    CodexOAuthChatClient,
+    DeepSeekChatClient,
+    ProviderError,
+)
+
+
+@pytest.mark.parametrize(
+    ("transport_error", "expected_cause"),
+    [
+        (httpx.ReadTimeout("private upstream detail"), "timeout"),
+        (httpx.ConnectError("private upstream detail"), "integration_error"),
+    ],
+)
+def test_deepseek_transport_errors_are_safely_classified(
+    monkeypatch,
+    transport_error: httpx.HTTPError,
+    expected_cause: str,
+) -> None:
+    def fail_stream(*_args, **_kwargs):
+        raise transport_error
+
+    monkeypatch.setattr(httpx, "stream", fail_stream)
+    client = DeepSeekChatClient(api_key="not-returned")
+
+    with pytest.raises(ProviderError) as exc:
+        list(client.stream_chat([{"role": "user", "content": "Question"}]))
+
+    assert exc.value.cause == expected_cause
+    assert "private upstream detail" not in str(exc.value)
 
 
 def test_codex_oauth_client_uses_safe_exec_command(monkeypatch) -> None:

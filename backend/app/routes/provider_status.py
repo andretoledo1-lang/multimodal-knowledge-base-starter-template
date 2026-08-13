@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from ipaddress import ip_address
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -25,6 +26,21 @@ def _hostname(value: str) -> str:
 
 
 def require_loopback_request(request: Request) -> None:
+    client = request.client
+    if client is None:
+        raise HTTPException(status_code=403, detail="Chat provider access is loopback-only.")
+    try:
+        address = ip_address(client.host)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail="Chat provider access is loopback-only.",
+        ) from exc
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    if not address.is_loopback:
+        raise HTTPException(status_code=403, detail="Chat provider access is loopback-only.")
+
     host = _hostname(request.headers.get("host", ""))
     if host not in _TRUSTED_HOSTS:
         raise HTTPException(status_code=403, detail="Provider status is loopback-only.")
@@ -51,6 +67,9 @@ def get_provider_readiness_service() -> ProviderReadinessService:
             codex_bin=settings.codex_bin,
             codex_model=settings.codex_oauth_model,
             claude_bin=settings.claude_bin,
+            claude_sonnet_model=settings.claude_sonnet_model,
+            claude_opus_model=settings.claude_opus_model,
+            claude_haiku_model=settings.claude_haiku_model,
         )
     )
 

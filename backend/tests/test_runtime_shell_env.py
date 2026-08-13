@@ -129,3 +129,18 @@ def test_backend_rejects_non_loopback_effective_bind(monkeypatch) -> None:
         assert "non-loopback" in str(exc)
     else:
         raise AssertionError("non-loopback bind should be rejected")
+
+
+def test_backend_rejects_missing_effective_bind_attestation(monkeypatch) -> None:
+    monkeypatch.delenv("DANTE_MULTIMODAL_EFFECTIVE_BIND_ADDRESS", raising=False)
+    try:
+        validate_effective_bind_address()
+    except RuntimeError as exc:
+        assert "explicit loopback bind attestation" in str(exc)
+    else:
+        raise AssertionError("missing bind attestation should be rejected")
+
+
+def test_backend_accepts_explicit_loopback_bind_attestation(monkeypatch) -> None:
+    monkeypatch.setenv("DANTE_MULTIMODAL_EFFECTIVE_BIND_ADDRESS", "127.0.0.1")
+    validate_effective_bind_address()

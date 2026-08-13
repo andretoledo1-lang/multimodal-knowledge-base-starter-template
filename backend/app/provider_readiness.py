@@ -11,7 +11,13 @@ from typing import Callable, Literal
 
 import httpx
 
-from .chat_profiles import active_chat_profiles
+from .chat_models import (
+    CHAT_MODEL_CLAUDE_OPUS,
+    CHAT_MODEL_CLAUDE_SONNET,
+    CHAT_MODEL_CODEX_OAUTH,
+    CHAT_MODEL_DEEPSEEK,
+)
+from .chat_profiles import active_chat_profiles, get_chat_profile
 from .provider_preflight import (
     ProviderCause,
     classify_provider_failure,
@@ -32,6 +38,9 @@ class ProviderProbeConfig:
     codex_bin: str
     codex_model: str
     claude_bin: str
+    claude_sonnet_model: str
+    claude_opus_model: str
+    claude_haiku_model: str
 
 
 @dataclass(frozen=True)
@@ -110,14 +119,24 @@ class ProviderReadinessService:
         self._lock = threading.Lock()
         self._cached: dict[str, ProviderProbe] | None = None
         self._cached_at = 0.0
+        self._cached_checked_at: str | None = None
         self._last_probe_at = 0.0
 
     def status_payload(self, *, refresh: bool = False) -> dict[str, object]:
-        probes = self._probes(refresh=refresh)
+        probes, checked_at, probed_now = self._probes(refresh=refresh)
         providers: list[dict[str, object]] = []
         for profile in active_chat_profiles():
             probe = probes[profile.provider_family]
             overlay = _active_overlay(profile.public_id)
+            if (
+                refresh
+                and probed_now
+                and probe.auth_state == "authenticated"
+                and overlay is not None
+                and overlay.cause == "auth_required"
+            ):
+                clear_runtime_failure(profile.public_id)
+                overlay = None
             if overlay is not None:
                 probe = replace(
                     probe,
@@ -142,9 +161,9 @@ class ProviderReadinessService:
                     "last_smoke": {"state": "not_run", "checked_at": None},
                 }
             )
-        return {"status": "verified", "checked_at": _now_iso(), "providers": providers}
+        return {"status": "verified", "checked_at": checked_at, "providers": providers}
 
-    def _probes(self, *, refresh: bool) -> dict[str, ProviderProbe]:
+    def _probes(self, *, refresh: bool) -> tuple[dict[str, ProviderProbe], str, bool]:
         now = time.monotonic()
         with self._lock:
             cache_age = now - self._cached_at
@@ -153,7 +172,8 @@ class ProviderReadinessService:
                 (not refresh and cache_age < self.cache_ttl_s)
                 or (refresh and since_probe < self.min_probe_interval_s)
             ):
-                return dict(self._cached)
+                assert self._cached_checked_at is not None
+                return dict(self._cached), self._cached_checked_at, False
 
             self._last_probe_at = now
             checked_at = _now_iso()
@@ -164,11 +184,15 @@ class ProviderReadinessService:
             }
             self._cached = probes
             self._cached_at = time.monotonic()
-            return dict(probes)
+            self._cached_checked_at = checked_at
+            return dict(probes), checked_at, True
 
     def _probe_deepseek(self, checked_at: str) -> ProviderProbe:
         if not self.config.deepseek_api_key:
             return self._unavailable("config_missing", checked_at, auth_state="unknown")
+        expected_model = get_chat_profile(CHAT_MODEL_DEEPSEEK).principal_model
+        if self.config.deepseek_model != expected_model:
+            return self._unavailable("model_unavailable", checked_at, retryable=False)
         headers = {"Authorization": f"Bearer {self.config.deepseek_api_key}"}
         base = self.config.deepseek_base_url.rstrip("/")
         try:
@@ -235,6 +259,9 @@ class ProviderReadinessService:
         )
 
     def _probe_codex(self, checked_at: str) -> ProviderProbe:
+        expected_model = get_chat_profile(CHAT_MODEL_CODEX_OAUTH).principal_model
+        if self.config.codex_model != expected_model:
+            return self._unavailable("model_unavailable", checked_at, retryable=False)
         return self._probe_cli_auth(
             [self.config.codex_bin, "login", "status"],
             env=_codex_oauth_env(),
@@ -243,6 +270,15 @@ class ProviderReadinessService:
         )
 
     def _probe_claude(self, checked_at: str) -> ProviderProbe:
+        sonnet_profile = get_chat_profile(CHAT_MODEL_CLAUDE_SONNET)
+        opus_profile = get_chat_profile(CHAT_MODEL_CLAUDE_OPUS)
+        expected_worker_model = sonnet_profile.worker.model if sonnet_profile.worker else None
+        if (
+            self.config.claude_sonnet_model != sonnet_profile.principal_model
+            or self.config.claude_opus_model != opus_profile.principal_model
+            or self.config.claude_haiku_model != expected_worker_model
+        ):
+            return self._unavailable("model_unavailable", checked_at, retryable=False)
         return self._probe_cli_auth(
             [self.config.claude_bin, "auth", "status", "--json"],
             env=_claude_oauth_env(),

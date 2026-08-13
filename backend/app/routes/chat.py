@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ..chat_store import ChatStore, ChatStoreNotFound
@@ -20,6 +20,7 @@ from ..provider_readiness import (
 )
 from ..rag import GroundedAnswer, answer_with_vision
 from ..schemas import ChatRequest, search_result_to_dto
+from .provider_status import require_loopback_request
 
 router = APIRouter(tags=["chat"])
 logger = logging.getLogger("kb.chat")
@@ -142,9 +143,11 @@ def _stream(kb: KbGateway, req: ChatRequest, store: ChatStore) -> Iterator[str]:
 @router.post("/chat")
 def chat(
     req: ChatRequest,
+    request: Request,
     kb: KbGateway = Depends(get_kb_gateway),
     store: ChatStore = Depends(get_chat_store),
 ) -> StreamingResponse:
+    require_loopback_request(request)
     if req.thread_id:
         try:
             thread = store.get_thread(req.thread_id)

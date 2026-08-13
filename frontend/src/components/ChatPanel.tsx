@@ -40,7 +40,6 @@ import {
 import type { ChatWorkspace } from "@/hooks/useChatWorkspace";
 import {
   api,
-  apiErrorMessage,
   type PersistedChatMessage,
   type ProviderStatus,
   type SearchResult,
@@ -601,7 +600,6 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
   const [providerStatuses, setProviderStatuses] = useState<ProviderStatus[]>(
     [],
   );
-  const [providerVerificationError, setProviderVerificationError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const [previewItem, setPreviewItem] = useState<PreviewDialogItem | null>(
     null,
@@ -616,13 +614,11 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
   );
   const loadProviderStatus = useCallback(async (refresh = false) => {
     setProviderLoadState("checking");
-    setProviderVerificationError("");
     try {
       const payload = await api.chatProviders({ refresh });
       setProviderStatuses(payload.providers);
       setProviderLoadState("verified");
-    } catch (error) {
-      setProviderVerificationError(apiErrorMessage(error));
+    } catch {
       setProviderLoadState("verification_error");
     }
   }, []);
@@ -642,8 +638,11 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
   const selectedProviderStatus = providerStatusByModel.get(chatModel);
   const selectedProviderAvailable =
     providerLoadState === "verified" && selectedProviderStatus?.available === true;
-  const hasUnavailableProvider = providerStatuses.some(
-    (status) => !status.available,
+  const unavailableProviders = providerStatuses.filter(
+    (status) => status.available === false,
+  );
+  const hasRefreshableProvider = unavailableProviders.some(
+    (status) => status.retryable || status.cause === "auth_required",
   );
   const contextGroups = useMemo(
     () => collectAssistantContextGroups(messages),
@@ -930,7 +929,7 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
                 <ChevronsUpDown className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
               </label>
               {(providerLoadState === "verification_error" ||
-                hasUnavailableProvider) && (
+                hasRefreshableProvider) && (
                 <Button
                   type="button"
                   variant="ghost"
@@ -951,29 +950,44 @@ export function ChatPanel({ workspace }: ChatPanelProps) {
             <div
               id={PROVIDER_STATUS_ID}
               className="chat-provider-status mt-1.5 min-h-5 text-xs text-muted-foreground"
-              role="status"
+              role="region"
+              aria-label="Provider availability"
               aria-live="polite"
-              aria-atomic="true"
+              aria-atomic="false"
             >
-              {providerLoadState === "checking" ? (
-                "Checking provider availability. Sending is disabled."
-              ) : providerLoadState === "verification_error" ? (
-                <>
-                  Provider verification failed. Sending is disabled. {" "}
-                  <span className="sr-only">{providerVerificationError}</span>
-                  Use Refresh provider status to retry.
-                </>
-              ) : selectedProviderStatus?.available ? (
-                selectedProviderStatus.state === "authenticated_unverified" ? (
-                  `${selectedProviderStatus.label}: authenticated; execution capacity is not smoke-tested.`
+              <p>
+                {providerLoadState === "checking" ? (
+                  "Checking provider availability. Sending is disabled."
+                ) : providerLoadState === "verification_error" ? (
+                  "Provider verification failed. Sending is disabled. Use Refresh provider status to retry."
+                ) : selectedProviderStatus?.available ? (
+                  selectedProviderStatus.state === "authenticated_unverified" ? (
+                    `${selectedProviderStatus.label}: authenticated; execution capacity is not smoke-tested.`
+                  ) : (
+                    `${selectedProviderStatus.label}: ready.`
+                  )
+                ) : selectedProviderStatus ? (
+                  "Selected provider is unavailable. Sending is disabled. Choose another model."
                 ) : (
-                  `${selectedProviderStatus.label}: ready.`
-                )
-              ) : selectedProviderStatus ? (
-                `${selectedProviderStatus.label}: unavailable. ${selectedProviderStatus.recovery_hint}`
-              ) : (
-                "Selected provider is not present in the verified registry. Choose another model."
-              )}
+                  "Selected provider is not present in the verified registry. Choose another model."
+                )}
+              </p>
+              {providerLoadState === "verified" &&
+                unavailableProviders.length > 0 && (
+                  <div className="mt-1">
+                    <p className="font-medium text-foreground/80">
+                      Unavailable providers:
+                    </p>
+                    <ul className="mt-0.5 list-disc space-y-0.5 pl-4">
+                      {unavailableProviders.map((status) => (
+                        <li key={status.model_id}>
+                          {status.label}: {status.cause.replaceAll("_", " ")}. {" "}
+                          {status.recovery_hint}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
             </div>
           </div>
         </Card>

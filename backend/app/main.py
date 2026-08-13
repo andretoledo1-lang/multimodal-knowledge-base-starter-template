@@ -34,7 +34,11 @@ _LOOPBACK_BIND_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
 def validate_effective_bind_address() -> None:
-    host = os.getenv("DANTE_MULTIMODAL_EFFECTIVE_BIND_ADDRESS", "127.0.0.1").strip().casefold()
+    host = os.getenv("DANTE_MULTIMODAL_EFFECTIVE_BIND_ADDRESS", "").strip().casefold()
+    if not host:
+        raise RuntimeError(
+            "DanteDash requires an explicit loopback bind attestation from its trusted launcher."
+        )
     if host not in _LOOPBACK_BIND_HOSTS:
         raise RuntimeError("DanteDash refuses a non-loopback backend bind without an authenticated gateway.")
 

@@ -177,41 +177,48 @@ class DeepSeekChatClient:
 
     def stream_chat(self, messages: list[dict[str, str]]) -> Iterator[str]:
         url = f"{self.base_url.rstrip('/')}/chat/completions"
-        with httpx.stream(
-            "POST",
-            url,
-            headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": self.model,
-                "messages": messages,
-                "stream": True,
-                "temperature": 0.2,
-            },
-            timeout=self.timeout_s,
-        ) as response:
-            if response.status_code >= 400:
-                text = response.read().decode("utf-8", errors="replace")
-                cause = classify_provider_failure(text, status_code=response.status_code)
-                raise ProviderError("DeepSeek chat is unavailable.", cause=cause)
+        try:
+            with httpx.stream(
+                "POST",
+                url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": True,
+                    "temperature": 0.2,
+                },
+                timeout=self.timeout_s,
+            ) as response:
+                if response.status_code >= 400:
+                    text = response.read().decode("utf-8", errors="replace")
+                    cause = classify_provider_failure(text, status_code=response.status_code)
+                    raise ProviderError("DeepSeek chat is unavailable.", cause=cause)
 
-            for line in response.iter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line.removeprefix("data:").strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    payload = json.loads(data)
-                except json.JSONDecodeError:
-                    logger.debug("Skipping malformed SSE data from DeepSeek: %r", data[:200])
-                    continue
-                delta = payload.get("choices", [{}])[0].get("delta", {})
-                token = delta.get("content")
-                if token:
-                    yield token
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line.removeprefix("data:").strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        payload = json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping malformed SSE data from DeepSeek.")
+                        continue
+                    delta = payload.get("choices", [{}])[0].get("delta", {})
+                    token = delta.get("content")
+                    if token:
+                        yield token
+        except ProviderError:
+            raise
+        except httpx.TimeoutException as exc:
+            raise ProviderError("DeepSeek chat timed out.", cause="timeout") from exc
+        except httpx.HTTPError as exc:
+            raise ProviderError("DeepSeek chat is unavailable.", cause="integration_error") from exc
 
 
 @dataclass

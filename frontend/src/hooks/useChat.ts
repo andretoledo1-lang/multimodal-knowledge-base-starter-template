@@ -204,6 +204,14 @@ export function useChat(options: UseChatOptions = {}) {
           toast.error(`Chat error: ${msg}`);
         }
       }
+      if (!completed && !hasStreamError && !ctrl.signal.aborted) {
+        updateAssistant((m) => ({
+          ...m,
+          content: m.content || "Chat ended without an answer. Please retry.",
+          streaming: false,
+          error: "The chat stream ended before completion.",
+        }));
+      }
     } catch (err) {
       if ((err as Error).name === "AbortError") {
         updateAssistant((m) => ({ ...m, streaming: false }));
