@@ -49,17 +49,11 @@ class VectorDrift:
     proof that a point exists in the served collection.
     """
 
-    expected_count: int
-    actual_count: int
     missing_ids: tuple[str, ...]
     stale_ids: tuple[str, ...]
     conflict_ids: tuple[str, ...]
     expected_id_digest: str
     actual_id_digest: str
-
-    @property
-    def exact(self) -> bool:
-        return not (self.missing_ids or self.stale_ids or self.conflict_ids)
 
 
 def classify_vector_drift(
@@ -79,8 +73,6 @@ def classify_vector_drift(
     if invalid_conflicts:
         raise ValueError("conflict_ids_outside_audited_union")
     return VectorDrift(
-        expected_count=len(expected),
-        actual_count=len(actual),
         missing_ids=tuple(sorted(expected_set - actual_set)),
         stale_ids=tuple(sorted(actual_set - expected_set)),
         conflict_ids=tuple(conflicts),

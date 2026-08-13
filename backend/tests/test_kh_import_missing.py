@@ -11,7 +11,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "dantedash_kh_import_missing.py"
 
 
-def test_import_missing_execute_without_candidates_is_safe(tmp_path: Path) -> None:
+def test_import_missing_refuses_legacy_execute_without_reading_candidates(tmp_path: Path) -> None:
     audit = tmp_path / "audit.json"
     audit.write_text(json.dumps({"rows": []}), encoding="utf-8")
 
@@ -28,14 +28,11 @@ def test_import_missing_execute_without_candidates_is_safe(tmp_path: Path) -> No
         cwd=REPO_ROOT,
         text=True,
         capture_output=True,
-        check=True,
+        check=False,
     )
 
-    payload = json.loads(result.stdout)
-    assert payload["dry_run"] is False
-    assert payload["execute_supported"] is False
-    assert payload["mutation_performed"] is False
-    assert payload["execution"]["status"] == "disabled"
+    assert result.returncode != 0
+    assert "Legacy execute mode is disabled" in result.stderr
 
 
 def test_import_missing_dry_run_writes_candidate_manifest(tmp_path: Path) -> None:

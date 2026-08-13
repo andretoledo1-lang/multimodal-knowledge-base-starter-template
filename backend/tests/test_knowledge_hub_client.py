@@ -163,21 +163,50 @@ def test_dantedash_image_search_missing_file_returns_public_error(tmp_path: Path
     }
 
 
-def test_dantedash_recovery_reads_are_unauthenticated() -> None:
+def test_dantedash_audit_sends_bearer_only_to_loopback() -> None:
     paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert "authorization" not in request.headers
+        assert request.headers["authorization"] == "Bearer secret-token"
         paths.append(request.url.path)
         return httpx.Response(200, json={"status": "ok"})
 
-    client = make_client(handler)
+    client = KnowledgeHubClient(
+        base_url="http://127.0.0.1:8080",
+        actions_base_url="http://actions.test",
+        actions_bearer_token="secret-token",
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
     assert client.dantedash_package_audit()["ok"] is True
-    assert client.dantedash_package_snapshots()["ok"] is True
-    assert paths == ["/dantedash/packages/audit", "/dantedash/packages/snapshots"]
+    assert paths == ["/dantedash/packages/audit"]
 
 
-def test_dantedash_recovery_mutations_send_bearer_only_to_loopback() -> None:
+def test_dantedash_audit_refuses_non_loopback_bearer_target() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"status": "ok"})
+
+    result = make_client(handler).dantedash_package_audit()
+
+    assert result["error"] == "local_action_endpoint_required"
+    assert calls == 0
+
+
+def test_dantedash_audit_refuses_missing_bearer() -> None:
+    client = KnowledgeHubClient(
+        base_url="http://127.0.0.1:8080",
+        actions_base_url="http://actions.test",
+        actions_bearer_token=None,
+        http_client=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
+    )
+
+    assert client.dantedash_package_audit()["error"] == "actions_bearer_required"
+
+
+def test_dantedash_import_mutation_sends_bearer_only_to_loopback() -> None:
     paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -193,18 +222,10 @@ def test_dantedash_recovery_mutations_send_bearer_only_to_loopback() -> None:
     )
 
     assert client.dantedash_import_packages({"execute": True, "rows": []})["ok"] is True
-    assert client.dantedash_create_package_snapshot({"run_id": "run-a"})["ok"] is True
-    assert client.dantedash_acquire_recovery_lease({"run_id": "run-a"})["ok"] is True
-    assert client.dantedash_release_recovery_lease({"run_id": "run-a", "lease_token": "opaque"})["ok"] is True
-    assert paths == [
-        "/dantedash/packages/import",
-        "/dantedash/packages/snapshots",
-        "/dantedash/packages/recovery/lease",
-        "/dantedash/packages/recovery/lease/release",
-    ]
+    assert paths == ["/dantedash/packages/import"]
 
 
-def test_dantedash_recovery_mutations_refuse_non_loopback_bearer_target() -> None:
+def test_dantedash_import_mutation_refuses_non_loopback_bearer_target() -> None:
     calls = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -214,14 +235,14 @@ def test_dantedash_recovery_mutations_refuse_non_loopback_bearer_target() -> Non
 
     client = make_client(handler)
 
-    result = client.dantedash_create_package_snapshot({"run_id": "run-a"})
+    result = client.dantedash_import_packages({"execute": True, "rows": []})
 
     assert result["ok"] is False
     assert result["error"] == "local_action_endpoint_required"
     assert calls == 0
 
 
-def test_dantedash_recovery_mutations_refuse_missing_bearer() -> None:
+def test_dantedash_import_mutation_refuses_missing_bearer() -> None:
     client = KnowledgeHubClient(
         base_url="http://127.0.0.1:8080",
         actions_base_url="http://actions.test",
@@ -229,7 +250,7 @@ def test_dantedash_recovery_mutations_refuse_missing_bearer() -> None:
         http_client=httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(500))),
     )
 
-    result = client.dantedash_acquire_recovery_lease({"run_id": "run-a"})
+    result = client.dantedash_import_packages({"execute": True, "rows": []})
 
     assert result["ok"] is False
     assert result["error"] == "actions_bearer_required"

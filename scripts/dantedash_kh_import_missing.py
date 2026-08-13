@@ -26,15 +26,15 @@ def main() -> int:
     parser.add_argument("--audit-summary", help="Existing kh-parity-audit-summary.json with real KH comparison evidence.")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--run-id", default="kh-missing-import-" + datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ"))
-    parser.add_argument("--knowledge-hub-base-url", default="")
-    parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument(
         "--execute",
         action="store_true",
-        help="Deprecated safety flag. Guarded execution moved to the receipt-bound recovery harness.",
+        help="Rejected compatibility flag; this legacy command is dry-run only.",
     )
     args = parser.parse_args()
 
+    if args.execute:
+        raise SystemExit("Legacy execute mode is disabled; this command only writes a local audit manifest")
     if not args.audit_summary:
         raise SystemExit("--audit-summary is required so missing rows come from real KH comparison evidence")
 
@@ -44,16 +44,11 @@ def main() -> int:
         for row in rows
         if row.get("row_class") == "canonical" and row.get("kh_relationship") in {"missing_in_kh", "missing_layer_in_kh"}
     ]
-    if args.execute and candidates:
-        raise SystemExit(
-            "Legacy execute mode is disabled: use dantedash_kh_visual_recovery.py after its receipt-bound executor is enabled"
-        )
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_dir.chmod(0o700)
-    mode_name = "execute" if args.execute else "dry-run"
-    manifest_path = out_dir / f"kh-missing-import-{mode_name}.tsv"
-    summary_path = out_dir / f"kh-missing-import-{mode_name}-summary.json"
+    manifest_path = out_dir / "kh-missing-import-dry-run.tsv"
+    summary_path = out_dir / "kh-missing-import-dry-run-summary.json"
 
     with manifest_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.DictWriter(
@@ -84,26 +79,17 @@ def main() -> int:
 
     by_modality = Counter(str(row.get("modality") or "unknown") for row in candidates)
     by_artifact = Counter(str(row.get("artifact_type") or "unknown") for row in candidates)
-    execution = {
-        "status": "disabled" if args.execute else "dry_run",
-        "batch_count": 0,
-        "imported_count": 0,
-        "invalid_count": 0,
-        "failed_count": 0,
-        "mutation_performed": False,
-    }
     summary = {
         "run_id": args.run_id,
         "generated_at": datetime.now(UTC).isoformat(),
-        "dry_run": not args.execute,
+        "dry_run": True,
         "execute_supported": False,
-        "mutation_performed": bool(execution.get("mutation_performed")),
+        "mutation_performed": False,
         "candidate_count": len(candidates),
         "candidate_relationships": dict(Counter(str(row.get("kh_relationship") or "unknown") for row in candidates)),
         "by_modality": dict(by_modality),
         "by_artifact_type": dict(by_artifact),
         "manifest": _display_path(manifest_path),
-        "execution": execution,
     }
     summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     summary_path.chmod(0o600)

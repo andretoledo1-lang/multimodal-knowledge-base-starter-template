@@ -132,19 +132,7 @@ class KnowledgeHubClient:
         return self._post_json("knowledge_hub", self.base_url, "/dantedash/packages/import", payload, sanitize=True)
 
     def dantedash_package_audit(self) -> dict[str, Any]:
-        return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/audit")
-
-    def dantedash_package_snapshots(self) -> dict[str, Any]:
-        return self._get_json("knowledge_hub", self.base_url, "/dantedash/packages/snapshots")
-
-    def dantedash_create_package_snapshot(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post_local_action_json("/dantedash/packages/snapshots", payload)
-
-    def dantedash_acquire_recovery_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post_local_action_json("/dantedash/packages/recovery/lease", payload)
-
-    def dantedash_release_recovery_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return self._post_local_action_json("/dantedash/packages/recovery/lease/release", payload)
+        return self._get_local_action_json("/dantedash/packages/audit")
 
     def dantedash_search_packages(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._post_json("knowledge_hub", self.base_url, "/dantedash/packages/search", payload)
@@ -229,11 +217,10 @@ class KnowledgeHubClient:
         self._http.close()
 
     def _post_local_action_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        """Send privileged Dante recovery calls only to a loopback KH URL."""
-        if not _is_loopback_http_url(self.base_url):
-            return _unavailable("knowledge_hub", "local_action_endpoint_required")
-        if not self.actions_bearer_token:
-            return _unavailable("knowledge_hub", "actions_bearer_required")
+        """Send privileged Dante calls only to a loopback KH URL."""
+        unavailable = self._local_action_unavailable()
+        if unavailable:
+            return unavailable
         return self._post_json(
             "knowledge_hub",
             self.base_url,
@@ -242,6 +229,25 @@ class KnowledgeHubClient:
             actions=True,
             sanitize=True,
         )
+
+    def _get_local_action_json(self, path: str) -> dict[str, Any]:
+        unavailable = self._local_action_unavailable()
+        if unavailable:
+            return unavailable
+        return self._get_json(
+            "knowledge_hub",
+            self.base_url,
+            path,
+            actions=True,
+            sanitize=True,
+        )
+
+    def _local_action_unavailable(self) -> dict[str, Any] | None:
+        if not _is_loopback_http_url(self.base_url):
+            return _unavailable("knowledge_hub", "local_action_endpoint_required")
+        if not self.actions_bearer_token:
+            return _unavailable("knowledge_hub", "actions_bearer_required")
+        return None
 
     def _get_json(
         self,

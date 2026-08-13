@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Plan and execute a fail-closed, delta-only Dante visual vector recovery.
+"""Audit a fail-closed, delta-only Dante visual vector recovery.
 
-Dry-run is the default and performs no network mutations and no provider calls.
-Stage A may reuse existing Chroma vectors only after a local provenance chain is
-validated. Stage B produces a complete immutable-source inventory; this tool
-intentionally has no provider adapter, so it cannot spend provider credit.
+The command performs no network mutations and no provider calls. Stage A audits
+whether existing Chroma vectors are bound by an exact provenance receipt. Stage
+B inventories immutable sources. There is deliberately no execution adapter.
 """
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -24,6 +23,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, Sequence
+from urllib.parse import urlparse
 
 import httpx
 
@@ -37,7 +37,7 @@ from app.kb_parity import classify_vector_drift  # noqa: E402
 from app.knowledge_hub_client import sanitize_public_payload  # noqa: E402
 
 
-SCHEMA_VERSION = "dantedash_kh_visual_recovery.v1"
+SCHEMA_VERSION = "dantedash_kh_visual_recovery_audit.v1"
 EMBEDDING_FAMILY = "voyage_multimodal_3_5_1024"
 EMBEDDING_MODEL = "voyage-multimodal-3.5"
 EMBEDDING_DIMENSION = 1024
@@ -109,16 +109,6 @@ class StageBInventory:
     blockers: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class RecoveryBatch:
-    batch_id: str
-    batch_index: int
-    batch_count: int
-    row_count: int
-    source_bundle_digest: str
-    state: str
-
-
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -140,7 +130,7 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def load_manifest(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+def load_manifest(path: Path) -> list[dict[str, Any]]:
     if path.is_symlink() or not path.is_file():
         raise RecoveryError("manifest_not_regular_file")
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -160,11 +150,10 @@ def load_manifest(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         raise RecoveryError("manifest_embedding_family_mismatch")
     if int(payload.get("embedding_dimension") or 0) != EMBEDDING_DIMENSION:
         raise RecoveryError("manifest_embedding_dimension_mismatch")
-    return payload, sorted(assets, key=lambda item: str(item["node_id"]))
+    return sorted(assets, key=lambda item: str(item["node_id"]))
 
 
-def manifest_content_digest(payload: Mapping[str, Any], assets: Sequence[Mapping[str, Any]]) -> str:
-    del payload
+def manifest_content_digest(assets: Sequence[Mapping[str, Any]]) -> str:
     return canonical_digest(list(assets))
 
 
@@ -256,7 +245,16 @@ def validate_audit_contract(audit: AuditEvidence, manifest_ids: Sequence[str], c
         raise RecoveryError("audit_point_conflicts_present")
 
 
-def fetch_audit(base_url: str, *, client: httpx.Client | None = None) -> dict[str, Any]:
+def fetch_audit(
+    base_url: str,
+    *,
+    actions_bearer_token: str | None,
+    client: httpx.Client | None = None,
+) -> dict[str, Any]:
+    if not _is_loopback_http_url(base_url):
+        raise RecoveryError("knowledge_hub_loopback_required")
+    if not actions_bearer_token:
+        raise RecoveryError("knowledge_hub_actions_bearer_required")
     owned = client is None
     http = client or httpx.Client(
         timeout=30.0,
@@ -264,7 +262,10 @@ def fetch_audit(base_url: str, *, client: httpx.Client | None = None) -> dict[st
         trust_env=False,
     )
     try:
-        response = http.get(f"{base_url.rstrip('/')}/dantedash/packages/audit")
+        response = http.get(
+            f"{base_url.rstrip('/')}/dantedash/packages/audit",
+            headers={"Authorization": f"Bearer {actions_bearer_token}"},
+        )
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError) as exc:
@@ -347,9 +348,10 @@ def build_stage_a(
     blockers: list[str] = []
     if historical_evidence.get("evidence_strength") != "direct_vector_provenance_receipt":
         blockers.append("chroma_vector_provenance_unverified")
+    collection_count = int(collection.count())
     offset = 0
     page_size = 128
-    while offset < int(collection.count()):
+    while offset < collection_count:
         payload = collection.get(
             limit=page_size,
             offset=offset,
@@ -392,20 +394,17 @@ def build_stage_a(
             rows.append(
                 {
                     "node_id": node_id,
-                    "document": document,
                     "document_sha256": hashlib.sha256(document.encode("utf-8")).hexdigest(),
                     "source_metadata_digest": canonical_digest(metadata),
                     "payload_identity_digest": canonical_digest(
                         {"document": document, "metadata": asset_meta, "node_id": node_id}
                     ),
-                    "metadata": asset_meta,
-                    "embedding_f32be_b64": base64.b64encode(packed).decode("ascii"),
                     "vector_sha256": hashlib.sha256(packed).hexdigest(),
                 }
             )
         offset += len(ids)
     rows.sort(key=lambda item: item["node_id"])
-    if len(rows) != int(collection.count()) and not blockers:
+    if len(rows) != collection_count and not blockers:
         blockers.append("chroma_collection_pagination_incomplete")
     node_id_digest = canonical_digest([row["node_id"] for row in rows])
     row_digest = canonical_digest(
@@ -527,12 +526,10 @@ def build_stage_b_inventory(
                 "source_locator": source_locator,
                 "input_sha256": input_sha256,
                 "input_bytes": byte_size,
-                "canonical_document": document,
                 "document_sha256": hashlib.sha256(document.encode("utf-8")).hexdigest(),
                 "payload_hash": payload_hash,
                 "payload_hash_origin": payload_hash_origin,
                 "payload_hash_state": payload_hash_state,
-                "metadata": metadata,
                 "payload_identity_digest": canonical_digest(
                     {"document": document, "metadata": metadata, "node_id": node_id}
                 ),
@@ -558,52 +555,22 @@ def build_stage_b_inventory(
     )
 
 
-def plan_recovery_batches(
-    run_id: str,
-    rows: Sequence[Mapping[str, Any]],
-    *,
-    batch_size: int,
-    settled_batch_digests: Iterable[str] = (),
-) -> list[RecoveryBatch]:
-    """Create deterministic resume/replay units without performing writes."""
-    if not RUN_ID_RE.fullmatch(run_id):
-        raise RecoveryError("run_id_invalid")
-    if batch_size < 1 or batch_size > 256:
-        raise RecoveryError("batch_size_out_of_range")
-    settled = {str(value) for value in settled_batch_digests}
-    if any(not SHA256_RE.fullmatch(value) for value in settled):
-        raise RecoveryError("settled_batch_digest_invalid")
-    ordered = sorted((dict(row) for row in rows), key=lambda row: str(row.get("node_id") or ""))
-    node_ids = [str(row.get("node_id") or "") for row in ordered]
-    if any(not node_id for node_id in node_ids) or len(node_ids) != len(set(node_ids)):
-        raise RecoveryError("batch_node_ids_invalid")
-    chunks = [ordered[index : index + batch_size] for index in range(0, len(ordered), batch_size)]
-    result: list[RecoveryBatch] = []
-    for index, chunk in enumerate(chunks, start=1):
-        digest = canonical_digest(chunk)
-        result.append(
-            RecoveryBatch(
-                batch_id=f"{run_id}:{index:05d}:{digest[:12]}",
-                batch_index=index,
-                batch_count=len(chunks),
-                row_count=len(chunk),
-                source_bundle_digest=digest,
-                state="settled_replay_skip" if digest in settled else "pending",
-            )
-        )
-    unknown = settled - {batch.source_bundle_digest for batch in result}
-    if unknown:
-        raise RecoveryError("settled_batch_not_in_source_bundle")
-    return result
-
-
-def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    manifest_payload, assets = load_manifest(Path(args.manifest))
+def audit_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    manifest_path = Path(args.manifest)
+    assets = load_manifest(manifest_path)
     manifest_ids = [str(item["node_id"]) for item in assets]
-    local_manifest_digest = manifest_content_digest(manifest_payload, assets)
-    audit = parse_audit(audit_raw or fetch_audit(args.knowledge_hub_base_url), manifest_ids)
+    manifest_file_digest = sha256_file(manifest_path)
+    local_manifest_digest = manifest_content_digest(assets)
+    audit = parse_audit(
+        audit_raw
+        or fetch_audit(
+            args.knowledge_hub_base_url,
+            actions_bearer_token=os.getenv("KNOWLEDGE_HUB_ACTIONS_BEARER_TOKEN", "").strip() or None,
+        ),
+        manifest_ids,
+    )
     validate_audit_contract(audit, manifest_ids, args.collection)
-    if audit.manifest_file_sha256 != sha256_file(Path(args.manifest)):
+    if audit.manifest_file_sha256 != manifest_file_digest:
         raise RecoveryError("audit_manifest_file_digest_mismatch")
     if audit.manifest_content_digest != local_manifest_digest:
         raise RecoveryError("audit_manifest_content_digest_mismatch")
@@ -639,17 +606,18 @@ def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | No
     )
     run_id = generate_run_id()
     run_dir = create_private_run_dir(run_id)
-    stage_a_path = run_dir / "stage-a-source-bundle.jsonl"
-    stage_b_path = run_dir / "stage-b-source-matrix.jsonl"
-    write_jsonl_once(stage_a_path, stage_a_rows)
-    write_jsonl_once(stage_b_path, stage_b_rows)
-    stage_a_bundle_digest = sha256_file(stage_a_path)
-    stage_b_bundle_digest = sha256_file(stage_b_path)
-    plan: dict[str, Any] = {
+    blockers = {
+        "audit_only_no_mutation_path",
+        *(f"stage_a:{blocker}" for blocker in stage_a.blockers),
+        *(f"stage_b:{blocker}" for blocker in stage_b.blockers),
+    }
+    summary: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id,
         "generated_at": utc_now(),
         "mode": "dry_run",
+        "status": "blocked",
+        "blockers": sorted(blockers),
         "mutation_performed": False,
         "provider_calls_performed": 0,
         "collection_name": audit.collection_name,
@@ -659,7 +627,7 @@ def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | No
         },
         "manifest": {
             "count": len(assets),
-            "file_sha256": sha256_file(Path(args.manifest)),
+            "file_sha256": manifest_file_digest,
             "content_digest": local_manifest_digest,
             "kh_manifest_file_sha256": audit.manifest_file_sha256,
             "kh_manifest_content_digest": audit.manifest_content_digest,
@@ -676,66 +644,25 @@ def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | No
             "stale_count": len(drift.stale_ids),
             "conflict_count": len(drift.conflict_ids),
             "content_exactness": "unverified",
-            "zero_write_replay_claimed": False,
         },
         "stage_a": asdict(stage_a),
         "stage_b": asdict(stage_b),
-        "bundles": {
-            "stage_a": {"filename": stage_a_path.name, "sha256": stage_a_bundle_digest},
-            "stage_b": {"filename": stage_b_path.name, "sha256": stage_b_bundle_digest},
-        },
-        "execution": {
-            "stage_a_supported": False,
-            "stage_a_blocker": "receipt_bound_executor_not_enabled",
-            "stage_b_supported": False,
-            "stage_b_blocker": "provider_adapter_not_configured",
-            "requires_actions_bearer": True,
-            "requires_snapshot_receipt": True,
-            "requires_recovery_lease": True,
+        "evidence": {
+            "historical": dict(historical),
+            "stage_a_rows": stage_a_rows,
+            "stage_b_rows": stage_b_rows,
         },
     }
-    digest_basis = dict(plan)
-    plan["plan_digest"] = canonical_digest(digest_basis)
-    write_json_once(run_dir / "plan.json", plan)
-    append_ledger_event(
-        run_dir / "ledger.jsonl",
-        {
-            "event": "dry_run_planned",
-            "run_id": run_id,
-            "plan_digest": plan["plan_digest"],
-            "stage_a_rows": stage_a.row_count,
-            "stage_b_rows": stage_b.row_count,
-            "mutation_performed": False,
-            "provider_calls_performed": 0,
-        },
-    )
-    write_json_once(
-        run_dir / "rollback-plan.json",
-        {
-            "schema_version": SCHEMA_VERSION,
-            "run_id": run_id,
-            "plan_digest": plan["plan_digest"],
-            "snapshot_required": True,
-            "foreign_baseline_digest": audit.foreign_point_digest,
-            "inserted_ids": [],
-            "allowed_action": "delete_exact_recorded_inserted_ids_only",
-            "served_collection_snapshot_restore_allowed": False,
-        },
-    )
-    freeze_file(stage_a_path)
-    freeze_file(stage_b_path)
-    freeze_file(run_dir / "plan.json")
-    freeze_file(run_dir / "rollback-plan.json")
-    public = sanitize_public_payload(plan)
+    summary["audit_digest"] = canonical_digest(summary)
+    audit_path = run_dir / "audit-summary.json"
+    write_json_once(audit_path, summary)
+    freeze_file(audit_path)
+    public = sanitize_public_payload({key: value for key, value in summary.items() if key != "evidence"})
     if not isinstance(public, dict):
         raise RecoveryError("public_summary_invalid")
     public["run_artifacts"] = {
         "run_id": run_id,
-        "plan": "plan.json",
-        "ledger": "ledger.jsonl",
-        "stage_a_bundle": stage_a_path.name,
-        "stage_b_matrix": stage_b_path.name,
-        "rollback_plan": "rollback-plan.json",
+        "audit_summary": audit_path.name,
     }
     return public
 
@@ -763,34 +690,6 @@ def write_json_once(path: Path, payload: Mapping[str, Any]) -> None:
     _write_bytes_once(path, (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"))
 
 
-def write_jsonl_once(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
-    body = b"".join(
-        (json.dumps(dict(row), ensure_ascii=True, separators=(",", ":"), sort_keys=True) + "\n").encode("utf-8")
-        for row in rows
-    )
-    _write_bytes_once(path, body)
-
-
-def append_ledger_event(path: Path, event: Mapping[str, Any]) -> None:
-    previous = "0" * 64
-    if path.exists():
-        lines = path.read_text(encoding="utf-8").splitlines()
-        if lines:
-            previous = str(json.loads(lines[-1]).get("event_digest") or "")
-            if not SHA256_RE.fullmatch(previous):
-                raise RecoveryError("ledger_chain_invalid")
-    record = {"recorded_at": utc_now(), "previous_event_digest": previous, **dict(event)}
-    record["event_digest"] = canonical_digest(record)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-    descriptor = os.open(path, flags, 0o600)
-    try:
-        os.write(descriptor, (json.dumps(record, sort_keys=True) + "\n").encode("utf-8"))
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    path.chmod(0o600)
-
-
 def freeze_file(path: Path) -> None:
     if path.is_symlink() or not path.is_file():
         raise RecoveryError("bundle_freeze_target_invalid")
@@ -801,11 +700,10 @@ def _write_bytes_once(path: Path, data: bytes) -> None:
     if path.parent.is_symlink() or path.exists() or path.is_symlink():
         raise RecoveryError("artifact_overwrite_refused")
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        os.write(descriptor, data)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
     path.chmod(0o600)
 
 
@@ -838,15 +736,16 @@ def _embedding_to_float_list(value: Any) -> list[float]:
         return []
 
 
-def decode_stage_a_vector(row: Mapping[str, Any]) -> list[float]:
-    encoded = str(row.get("embedding_f32be_b64") or "")
+def _is_loopback_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return False
+    if parsed.hostname == "localhost":
+        return True
     try:
-        packed = base64.b64decode(encoded, validate=True)
-    except ValueError as exc:
-        raise RecoveryError("stage_a_vector_encoding_invalid") from exc
-    if len(packed) != EMBEDDING_DIMENSION * 4 or hashlib.sha256(packed).hexdigest() != row.get("vector_sha256"):
-        raise RecoveryError("stage_a_vector_digest_mismatch")
-    return list(struct.unpack(f">{EMBEDDING_DIMENSION}f", packed))
+        return bool(parsed.hostname and ipaddress.ip_address(parsed.hostname).is_loopback)
+    except ValueError:
+        return False
 
 
 def _required_nonnegative_int(data: Mapping[str, Any], key: str) -> int:
@@ -876,14 +775,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
     parser.add_argument("--historical-commit", default=DEFAULT_EVIDENCE_COMMIT)
     parser.add_argument("--historical-snapshot", default=str(DEFAULT_EVIDENCE_SNAPSHOT))
-    parser.add_argument("--batch-size", type=int, default=128)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        result = plan_recovery(args)
+        result = audit_recovery(args)
     except RecoveryError as exc:
         print(json.dumps({"ok": False, "status": "blocked", "blocker": str(exc)}), file=sys.stderr)
         return 2

@@ -144,8 +144,9 @@ def test_fetch_audit_disables_environment_proxy_routing(monkeypatch) -> None:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-        def get(self, url: str):
+        def get(self, url: str, *, headers):
             captured["url"] = url
+            captured["authorization"] = headers.get("Authorization")
             return FakeResponse()
 
         def close(self) -> None:
@@ -155,10 +156,23 @@ def test_fetch_audit_disables_environment_proxy_routing(monkeypatch) -> None:
     monkeypatch.delenv("NO_PROXY", raising=False)
     monkeypatch.setattr(module.httpx, "Client", FakeHttpClient)
 
-    assert module.fetch_audit("http://127.0.0.1:8080") == {"status": "ok"}
+    assert module.fetch_audit(
+        "http://127.0.0.1:8080",
+        actions_bearer_token="secret-token",
+    ) == {"status": "ok"}
     assert captured["trust_env"] is False
     assert captured["follow_redirects"] is False
+    assert captured["authorization"] == "Bearer secret-token"
     assert captured["closed"] is True
+
+
+def test_fetch_audit_refuses_missing_bearer_or_non_loopback() -> None:
+    module = load_module()
+
+    with pytest.raises(module.RecoveryError, match="knowledge_hub_actions_bearer_required"):
+        module.fetch_audit("http://127.0.0.1:8080", actions_bearer_token=None)
+    with pytest.raises(module.RecoveryError, match="knowledge_hub_loopback_required"):
+        module.fetch_audit("https://kh.example", actions_bearer_token="secret-token")
 
 
 def test_build_stage_a_binds_rows_documents_payloads_vectors_and_evidence() -> None:
@@ -185,7 +199,10 @@ def test_build_stage_a_binds_rows_documents_payloads_vectors_and_evidence() -> N
     assert receipt.row_count == 1
     assert receipt.dimension == 1024
     assert all(len(value) == 64 for value in (receipt.row_digest, receipt.payload_digest, receipt.vector_digest))
-    assert module.decode_stage_a_vector(rows[0]) == [0.25] * 1024
+    assert rows[0]["vector_sha256"] == hashlib.sha256(struct.pack(">1024f", *([0.25] * 1024))).hexdigest()
+    assert "embedding_f32be_b64" not in rows[0]
+    assert "document" not in rows[0]
+    assert "metadata" not in rows[0]
 
 
 def test_build_stage_a_fails_closed_on_wrong_dimension() -> None:
@@ -285,6 +302,8 @@ def test_stage_b_builds_complete_no_provider_inventory(tmp_path: Path) -> None:
     card = next(row for row in rows if row["node_id"] == "card-a")
     assert card["qdrant_state"] == "present_unverified"
     assert card["payload_hash_state"] == "present_unverified"
+    assert "canonical_document" not in card
+    assert "metadata" not in card
 
 
 def test_stage_b_never_derives_or_certifies_invalid_payload_hash() -> None:
@@ -352,37 +371,9 @@ def test_chroma_database_digest_includes_wal_and_shm(tmp_path: Path) -> None:
     assert changed_journal != with_journal
 
 
-def test_batch_plan_is_deterministic_and_exact_replay_skips_every_batch() -> None:
-    module = load_module()
-    run_id = "visual-recovery-20260813T120000Z-1234abcd"
-    rows = [{"node_id": "node-b", "value": 2}, {"node_id": "node-a", "value": 1}]
-
-    first = module.plan_recovery_batches(run_id, rows, batch_size=1)
-    replay = module.plan_recovery_batches(
-        run_id,
-        rows,
-        batch_size=1,
-        settled_batch_digests=[batch.source_bundle_digest for batch in first],
-    )
-
-    assert [batch.batch_id for batch in replay] == [batch.batch_id for batch in first]
-    assert [batch.state for batch in replay] == ["settled_replay_skip", "settled_replay_skip"]
-    assert sum(batch.state == "pending" for batch in replay) == 0
-
-
-def test_batch_plan_rejects_unknown_settled_digest() -> None:
-    module = load_module()
-
-    with pytest.raises(module.RecoveryError, match="settled_batch_not_in_source_bundle"):
-        module.plan_recovery_batches(
-            "visual-recovery-20260813T120000Z-1234abcd",
-            [{"node_id": "node-a"}],
-            batch_size=1,
-            settled_batch_digests=["f" * 64],
-        )
-
-
-def test_plan_dry_run_writes_owner_only_immutable_bundles_without_mutation(tmp_path: Path, monkeypatch) -> None:
+def test_audit_dry_run_writes_one_owner_only_immutable_summary_without_mutation(
+    tmp_path: Path, monkeypatch
+) -> None:
     module = load_module()
     chroma_dir = tmp_path / "chroma"
     chroma_dir.mkdir()
@@ -421,7 +412,7 @@ def test_plan_dry_run_writes_owner_only_immutable_bundles_without_mutation(tmp_p
         ]
     )
 
-    result = module.plan_recovery(
+    result = module.audit_recovery(
         args,
         audit_raw=audit_payload(
             module,
@@ -432,20 +423,25 @@ def test_plan_dry_run_writes_owner_only_immutable_bundles_without_mutation(tmp_p
     )
 
     assert result["mode"] == "dry_run"
+    assert result["status"] == "blocked"
+    assert "audit_only_no_mutation_path" in result["blockers"]
     assert result["mutation_performed"] is False
     assert result["provider_calls_performed"] == 0
+    assert "evidence" not in result
     run_dir = tmp_path / "runs" / result["run_id"]
-    plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
-    assert plan["stage_a"]["status"] == "certified"
-    assert plan["stage_b"]["row_count"] == 0
-    assert plan["baseline"]["content_exactness"] == "unverified"
-    assert plan["baseline"]["zero_write_replay_claimed"] is False
-    assert plan["execution"]["stage_a_supported"] is False
-    assert plan["execution"]["stage_b_supported"] is False
-    stage_a_row = json.loads((run_dir / "stage-a-source-bundle.jsonl").read_text(encoding="utf-8"))
+    assert [path.name for path in run_dir.iterdir()] == ["audit-summary.json"]
+    assert run_dir.stat().st_mode & 0o777 == 0o700
+    summary_path = run_dir / "audit-summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    digest = summary.pop("audit_digest")
+    assert digest == module.canonical_digest(summary)
+    assert summary["stage_a"]["status"] == "certified"
+    assert summary["stage_b"]["row_count"] == 0
+    assert summary["baseline"]["content_exactness"] == "unverified"
+    stage_a_row = summary["evidence"]["stage_a_rows"][0]
     assert stage_a_row["qdrant_state"] == "present_unverified"
-    assert (run_dir / "stage-a-source-bundle.jsonl").stat().st_mode & 0o777 == 0o400
-    assert (run_dir / "ledger.jsonl").stat().st_mode & 0o777 == 0o600
+    assert "embedding_f32be_b64" not in stage_a_row
+    assert summary_path.stat().st_mode & 0o777 == 0o400
 
 
 def test_conflicting_qdrant_audit_blocks_before_plan_creation(tmp_path: Path) -> None:

@@ -22,12 +22,9 @@ def test_classify_vector_drift_uses_served_vector_ids() -> None:
         conflict_ids=["node-b"],
     )
 
-    assert drift.expected_count == 2
-    assert drift.actual_count == 2
     assert drift.missing_ids == ("node-a",)
     assert drift.stale_ids == ("foreign-stale",)
     assert drift.conflict_ids == ("node-b",)
-    assert drift.exact is False
     assert len(drift.expected_id_digest) == 64
     assert len(drift.actual_id_digest) == 64
 
