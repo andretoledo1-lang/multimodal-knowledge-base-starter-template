@@ -8,6 +8,7 @@ from typing import Literal
 ProviderCause = Literal[
     "ready",
     "auth_required",
+    "oauth_expired",
     "billing_required",
     "quota_exhausted",
     "rate_limited",
@@ -28,6 +29,11 @@ def classify_provider_failure(
 ) -> ProviderCause:
     """Reduce provider output to a fixed, non-sensitive cause code."""
     text = detail.casefold()
+    if any(
+        marker in text
+        for marker in ("oauth token expired", "oauth expired", "expired oauth", "token has expired")
+    ):
+        return "oauth_expired"
     if status_code in {401, 403} or any(
         marker in text
         for marker in ("not logged in", "login required", "unauthorized", "authentication", "oauth")
@@ -55,6 +61,7 @@ def recovery_hint_for_cause(cause: ProviderCause) -> str:
     return {
         "ready": "Provider is ready.",
         "auth_required": "Sign in to this provider, then refresh provider status.",
+        "oauth_expired": "Sign in to this provider again, then refresh provider status.",
         "billing_required": "Review provider billing, then refresh provider status.",
         "quota_exhausted": "Wait for quota renewal or add capacity, then refresh.",
         "rate_limited": "Wait briefly, then refresh provider status.",

@@ -10,6 +10,7 @@ from app.provider_preflight import (
 
 def test_failure_classifier_returns_fixed_safe_causes() -> None:
     assert classify_provider_failure("private account output", status_code=401) == "auth_required"
+    assert classify_provider_failure("OAuth token expired") == "oauth_expired"
     assert classify_provider_failure("Insufficient Balance", status_code=402) == "billing_required"
     assert classify_provider_failure("rate limit reached") == "rate_limited"
     assert classify_provider_failure("model not found") == "model_unavailable"

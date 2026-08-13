@@ -212,6 +212,30 @@ def test_authoritative_refresh_clears_resolved_auth_overlay(monkeypatch) -> None
         clear_runtime_failure("codex-gpt-5.5-oauth")
 
 
+def test_cli_probe_preserves_redacted_oauth_expired_cause(monkeypatch) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(
+            command,
+            1,
+            stdout="",
+            stderr="OAuth token expired for private@example.test",
+        ),
+    )
+    service = ProviderReadinessService(_config(), http_get=_http_get)
+
+    row = next(
+        item
+        for item in service.status_payload()["providers"]
+        if item["model_id"] == "codex-gpt-5.5-oauth"
+    )
+
+    assert row["available"] is False
+    assert row["cause"] == "oauth_expired"
+    assert "private@example.test" not in str(row)
+
+
 def test_runtime_model_overrides_fail_readiness_closed(monkeypatch) -> None:
     def fail_http(*_args, **_kwargs):
         raise AssertionError("invalid model configuration must not reach provider metadata")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import httpx
@@ -90,6 +91,27 @@ def test_timeout_returns_redacted_public_error() -> None:
     assert result["ok"] is False
     assert result["error"] == "request_timeout"
     assert "private" not in str(result)
+
+
+def test_ordinary_requests_keep_the_configured_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.extensions["timeout"] == {
+            "connect": 4.0,
+            "read": 4.0,
+            "write": 4.0,
+            "pool": 4.0,
+        }
+        return httpx.Response(200, json={"status": "ok"})
+
+    client = KnowledgeHubClient(
+        base_url="http://kh.test",
+        actions_base_url="http://actions.test",
+        actions_bearer_token="secret-token",
+        timeout_s=4.0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    assert client.health()["ok"] is True
 
 
 def test_actions_openapi_filters_to_read_only_operations() -> None:
@@ -271,6 +293,20 @@ def test_dantedash_import_rejects_non_boolean_execute_without_request() -> None:
     assert result["ok"] is False
     assert result["error"] == "execute_flag_must_be_boolean"
     assert calls == 0
+
+
+def test_dantedash_import_defaults_omitted_execute_to_dry_run() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"status": "dry_run"})
+
+    result = make_client(handler).dantedash_import_packages({"rows": []})
+
+    assert result["ok"] is True
+    assert result["data"]["status"] == "dry_run"
+    assert bodies == [{"rows": []}]
 
 
 def test_sanitize_public_payload_removes_sensitive_keys_and_paths() -> None:

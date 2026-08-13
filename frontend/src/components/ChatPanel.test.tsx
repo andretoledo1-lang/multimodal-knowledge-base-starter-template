@@ -148,6 +148,23 @@ describe("ChatPanel provider readiness", () => {
     ).toBeInTheDocument();
   });
 
+  it("bounds provider verification requests", async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, "timeout");
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => providerPayload(true),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.chatProviders();
+
+    expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/chat/providers",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("does not offer retry when every unavailable cause is nonretryable", async () => {
     const payload = providerPayload(true);
     payload.providers[0] = {

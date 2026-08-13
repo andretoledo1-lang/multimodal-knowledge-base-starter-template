@@ -133,7 +133,14 @@ def sha256_file(path: Path) -> str:
 def load_manifest(path: Path) -> list[dict[str, Any]]:
     if path.is_symlink() or not path.is_file():
         raise RecoveryError("manifest_not_regular_file")
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw_manifest = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise RecoveryError("manifest_unreadable") from exc
+    try:
+        payload = json.loads(raw_manifest)
+    except json.JSONDecodeError as exc:
+        raise RecoveryError("manifest_json_invalid") from exc
     if not isinstance(payload, dict) or not isinstance(payload.get("assets"), list):
         raise RecoveryError("manifest_schema_invalid")
     assets = [dict(item) for item in payload["assets"] if isinstance(item, dict)]
@@ -187,17 +194,20 @@ def parse_audit(raw: Mapping[str, Any], manifest_ids: Sequence[str]) -> AuditEvi
             actual_raw = []
         else:
             raise RecoveryError("audit_vector_ids_missing")
-    conflict_raw = (
-        drift.get("point_conflict_ids")
-        or drift.get("conflict_ids")
-        or data.get("point_conflict_ids")
-        or data.get("conflict_ids")
-        or []
-    )
-    if not isinstance(conflict_raw, list):
+    conflict_raw = drift.get("point_conflict_ids")
+    if conflict_raw is None:
+        conflict_raw = drift.get("conflict_ids")
+    if conflict_raw is None:
+        conflict_raw = data.get("point_conflict_ids")
+    if conflict_raw is None:
+        conflict_raw = data.get("conflict_ids", [])
+    foreign_collision_raw = drift.get("foreign_collision_ids")
+    if foreign_collision_raw is None:
+        foreign_collision_raw = data.get("foreign_collision_ids", [])
+    if not isinstance(conflict_raw, list) or not isinstance(foreign_collision_raw, list):
         raise RecoveryError("audit_conflict_ids_invalid")
     actual_ids = tuple(sorted(str(item) for item in actual_raw))
-    conflict_ids = tuple(sorted(str(item) for item in conflict_raw))
+    conflict_ids = tuple(sorted({str(item) for item in conflict_raw + foreign_collision_raw}))
     if len(actual_ids) != len(set(actual_ids)) or len(actual_ids) != vector_count:
         raise RecoveryError("audit_vector_count_mismatch")
     foreign_digest = str(data.get("foreign_point_digest") or "")
@@ -402,7 +412,7 @@ def build_stage_a(
             )
         offset += len(ids)
     rows.sort(key=lambda item: item["node_id"])
-    if len(rows) != collection_count and not blockers:
+    if len(rows) != collection_count:
         blockers.append("chroma_collection_pagination_incomplete")
     node_id_digest = canonical_digest([row["node_id"] for row in rows])
     row_digest = canonical_digest(

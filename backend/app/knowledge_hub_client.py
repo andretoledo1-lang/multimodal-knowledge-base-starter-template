@@ -124,7 +124,7 @@ class KnowledgeHubClient:
         return self._post_json("knowledge_hub", self.base_url, "/retrieve", payload)
 
     def dantedash_import_packages(self, payload: dict[str, Any]) -> dict[str, Any]:
-        execute = payload.get("execute")
+        execute = payload.get("execute", False)
         if not isinstance(execute, bool):
             return _unavailable("knowledge_hub", "execute_flag_must_be_boolean")
         if execute:
@@ -299,6 +299,7 @@ class KnowledgeHubClient:
         headers: dict[str, str] = {}
         if actions and self.actions_bearer_token:
             headers["Authorization"] = f"Bearer {self.actions_bearer_token}"
+        request_timeout = self.timeout_s if timeout_s is None else timeout_s
         try:
             response = self._http.request(
                 method,
@@ -308,7 +309,7 @@ class KnowledgeHubClient:
                 data=data,
                 files=files,
                 headers=headers,
-                timeout=timeout_s,
+                timeout=request_timeout,
             )
         except httpx.TimeoutException:
             return _unavailable(surface, "request_timeout")

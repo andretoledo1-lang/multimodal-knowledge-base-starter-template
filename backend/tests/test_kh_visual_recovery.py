@@ -42,6 +42,11 @@ class FakeCollection:
         }
 
 
+class PrematureEndCollection(FakeCollection):
+    def count(self):
+        return super().count() + 1
+
+
 def asset(node_id: str, *, artifact_type: str = "legacy", document: str = "alpha", **extra):
     metadata = {
         "id": node_id,
@@ -120,6 +125,21 @@ def test_parse_audit_accepts_unready_zero_vector_contract(tmp_path: Path) -> Non
 
     assert audit.vector_count == 0
     assert audit.actual_ids == ()
+
+
+def test_malformed_manifest_is_reported_as_a_structured_blocker(tmp_path: Path, capsys) -> None:
+    module = load_module()
+    manifest = tmp_path / "dantedash.json"
+    manifest.write_text("{not-json", encoding="utf-8")
+
+    exit_code = module.main(["--manifest", str(manifest)])
+
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().err) == {
+        "ok": False,
+        "status": "blocked",
+        "blocker": "manifest_json_invalid",
+    }
 
 
 def test_fetch_audit_disables_environment_proxy_routing(monkeypatch) -> None:
@@ -233,6 +253,23 @@ def test_build_stage_a_does_not_certify_indirect_provider_evidence() -> None:
     assert receipt.row_count == 1
     assert len(rows) == 1
     assert receipt.blockers == ("chroma_vector_provenance_unverified",)
+
+
+def test_build_stage_a_reports_premature_pagination_end() -> None:
+    module = load_module()
+    collection = PrematureEndCollection(
+        [{"node_id": "node-a", "document": "alpha", "metadata": {}, "embedding": [0.25] * 1024}]
+    )
+
+    receipt, rows = module.build_stage_a(
+        collection,
+        [asset("node-a")],
+        database_digest="d" * 64,
+        historical_evidence={"evidence_strength": "indirect_specific_workspace_chain"},
+    )
+
+    assert len(rows) == 1
+    assert "chroma_collection_pagination_incomplete" in receipt.blockers
 
 
 def test_stage_b_builds_complete_no_provider_inventory(tmp_path: Path) -> None:
@@ -428,6 +465,37 @@ def test_conflicting_qdrant_audit_blocks_before_plan_creation(tmp_path: Path) ->
     point_id = module.dantedash_point_id("node-a")
     raw = audit_payload(module, manifest, assets, actual_ids=[point_id])
     raw["drift"]["point_conflict_ids"] = [point_id]
+    audit = module.parse_audit(raw, ["node-a"])
+
+    with pytest.raises(module.RecoveryError, match="audit_point_conflicts_present"):
+        module.validate_audit_contract(
+            audit,
+            ["node-a"],
+            "visual_memory__voyage_multimodal_3_5_1024",
+        )
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        {"point_conflict_ids": [], "foreign_collision_ids": ["foreign-collision"]},
+        {
+            "point_conflict_ids": ["point-conflict"],
+            "foreign_collision_ids": ["foreign-collision"],
+        },
+    ],
+)
+def test_foreign_collision_ids_are_never_ignored(tmp_path: Path, drift: dict[str, list[str]]) -> None:
+    module = load_module()
+    assets = [asset("node-a")]
+    manifest = tmp_path / "dantedash.json"
+    manifest.write_text(json.dumps({"assets": assets}), encoding="utf-8")
+    raw = audit_payload(module, manifest, assets)
+    expected_id = module.dantedash_point_id("node-a")
+    raw["drift"] = {
+        key: [expected_id] if values else []
+        for key, values in drift.items()
+    }
     audit = module.parse_audit(raw, ["node-a"])
 
     with pytest.raises(module.RecoveryError, match="audit_point_conflicts_present"):

@@ -75,6 +75,7 @@ def record_runtime_failure(model_id: str, cause: ProviderCause) -> None:
         "rate_limited": 30.0,
         "timeout": 60.0,
         "auth_required": 300.0,
+        "oauth_expired": 300.0,
         "billing_required": 300.0,
         "quota_exhausted": 300.0,
         "model_unavailable": 300.0,
@@ -133,7 +134,7 @@ class ProviderReadinessService:
                 and probed_now
                 and probe.auth_state == "authenticated"
                 and overlay is not None
-                and overlay.cause == "auth_required"
+                and overlay.cause in {"auth_required", "oauth_expired"}
             ):
                 clear_runtime_failure(profile.public_id)
                 overlay = None
@@ -256,7 +257,7 @@ class ProviderReadinessService:
         return self._unavailable(
             cause,
             checked_at,
-            auth_state="unauthenticated" if cause == "auth_required" else "unknown",
+            auth_state="unauthenticated" if cause in {"auth_required", "oauth_expired"} else "unknown",
             capacity_state="unavailable",
             retryable=cause not in {"billing_required", "quota_exhausted", "model_unavailable"},
         )
@@ -334,7 +335,11 @@ class ProviderReadinessService:
                 checked_at=checked_at,
                 retryable=False,
             )
-        return self._unavailable("auth_required", checked_at, auth_state="unauthenticated")
+        failure_detail = f"{proc.stdout}\n{proc.stderr}"
+        cause = classify_provider_failure(failure_detail)
+        if cause not in {"auth_required", "oauth_expired"}:
+            cause = "auth_required"
+        return self._unavailable(cause, checked_at, auth_state="unauthenticated")
 
     @staticmethod
     def _unavailable(
@@ -360,6 +365,7 @@ def classify_runtime_exception(exc: BaseException) -> ProviderCause:
     cause = getattr(exc, "cause", None)
     if isinstance(cause, str) and cause in {
         "auth_required",
+        "oauth_expired",
         "billing_required",
         "quota_exhausted",
         "rate_limited",

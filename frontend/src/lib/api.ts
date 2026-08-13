@@ -314,12 +314,18 @@ async function jsonOrThrow<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+const PROVIDER_STATUS_TIMEOUT_MS = 10_000;
+
 export const api = {
   async chatProviders(args?: {
     refresh?: boolean;
   }): Promise<ProviderStatusResponse> {
     const query = args?.refresh ? "?refresh=true" : "";
-    return jsonOrThrow(await fetch(`/api/chat/providers${query}`));
+    return jsonOrThrow(
+      await fetch(`/api/chat/providers${query}`, {
+        signal: AbortSignal.timeout(PROVIDER_STATUS_TIMEOUT_MS),
+      }),
+    );
   },
 
   async bootstrapWorkspace(): Promise<WorkspaceBootstrapResponse> {
