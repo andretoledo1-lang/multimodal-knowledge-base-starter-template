@@ -104,7 +104,11 @@ class KnowledgeHubClient:
         self.actions_base_url = actions_base_url.rstrip("/")
         self.actions_bearer_token = actions_bearer_token
         self.timeout_s = timeout_s
-        self._http = http_client or httpx.Client(timeout=timeout_s, follow_redirects=False)
+        self._http = http_client or httpx.Client(
+            timeout=timeout_s,
+            follow_redirects=False,
+            trust_env=False,
+        )
 
     def health(self) -> dict[str, Any]:
         return self._get_json("knowledge_hub", self.base_url, "/health")

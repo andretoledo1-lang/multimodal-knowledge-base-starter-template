@@ -4,6 +4,7 @@ from pathlib import Path
 
 import httpx
 
+from app import knowledge_hub_client as knowledge_hub_client_module
 from app.knowledge_hub_client import KnowledgeHubClient, sanitize_public_payload
 
 
@@ -14,6 +15,31 @@ def make_client(handler) -> KnowledgeHubClient:
         actions_bearer_token="secret-token",
         http_client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
+
+
+def test_default_client_disables_environment_proxy_routing(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example:3128")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.setattr(knowledge_hub_client_module.httpx, "Client", FakeHttpClient)
+
+    client = KnowledgeHubClient(
+        base_url="http://127.0.0.1:8080",
+        actions_base_url="http://127.0.0.1:8098",
+        actions_bearer_token="secret-token",
+    )
+
+    assert captured["trust_env"] is False
+    assert captured["follow_redirects"] is False
+    client.close()
 
 
 def test_healthy_kh_api_returns_sanitized_payloads() -> None:

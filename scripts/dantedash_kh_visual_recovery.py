@@ -88,6 +88,7 @@ class StageAReceipt:
     status: str
     row_count: int
     database_digest: str
+    node_id_digest: str
     row_digest: str
     document_digest: str
     payload_digest: str
@@ -246,12 +247,22 @@ def validate_audit_contract(audit: AuditEvidence, manifest_ids: Sequence[str], c
     if audit.total_vector_count != audit.vector_count + audit.foreign_vector_count:
         raise RecoveryError("audit_total_count_mismatch")
     expected_point_ids = [dantedash_point_id(node_id) for node_id in manifest_ids]
-    classify_vector_drift(expected_point_ids, audit.actual_ids, conflict_ids=audit.conflict_ids)
+    drift = classify_vector_drift(
+        expected_point_ids,
+        audit.actual_ids,
+        conflict_ids=audit.conflict_ids,
+    )
+    if drift.conflict_ids:
+        raise RecoveryError("audit_point_conflicts_present")
 
 
 def fetch_audit(base_url: str, *, client: httpx.Client | None = None) -> dict[str, Any]:
     owned = client is None
-    http = client or httpx.Client(timeout=30.0, follow_redirects=False)
+    http = client or httpx.Client(
+        timeout=30.0,
+        follow_redirects=False,
+        trust_env=False,
+    )
     try:
         response = http.get(f"{base_url.rstrip('/')}/dantedash/packages/audit")
         response.raise_for_status()
@@ -310,7 +321,7 @@ def digest_file_tree(root: Path) -> str:
     for path in sorted(root.rglob("*")):
         if path.is_symlink():
             raise RecoveryError("chroma_database_symlink_refused")
-        if not path.is_file() or path.name.endswith(("-shm", "-wal", ".lock")):
+        if not path.is_file() or path.name.endswith(".lock"):
             continue
         entries.append(
             {
@@ -396,22 +407,51 @@ def build_stage_a(
     rows.sort(key=lambda item: item["node_id"])
     if len(rows) != int(collection.count()) and not blockers:
         blockers.append("chroma_collection_pagination_incomplete")
+    node_id_digest = canonical_digest([row["node_id"] for row in rows])
+    row_digest = canonical_digest(
+        [
+            {
+                "node_id": row["node_id"],
+                "source_metadata_digest": row["source_metadata_digest"],
+            }
+            for row in rows
+        ]
+    )
+    document_digest = canonical_digest(
+        [{"node_id": row["node_id"], "sha256": row["document_sha256"]} for row in rows]
+    )
+    payload_digest = canonical_digest(
+        [
+            {"node_id": row["node_id"], "sha256": row["payload_identity_digest"]}
+            for row in rows
+        ]
+    )
+    vector_digest = canonical_digest(
+        [{"node_id": row["node_id"], "sha256": row["vector_sha256"]} for row in rows]
+    )
+    if historical_evidence.get("evidence_strength") == "direct_vector_provenance_receipt":
+        if historical_evidence.get("database_digest") != database_digest:
+            blockers.append("chroma_database_digest_mismatch")
+        expected_row_count = historical_evidence.get("expected_row_count")
+        if (
+            isinstance(expected_row_count, bool)
+            or not isinstance(expected_row_count, int)
+            or expected_row_count != len(rows)
+        ):
+            blockers.append("chroma_expected_row_count_mismatch")
+        if historical_evidence.get("node_id_digest") != node_id_digest:
+            blockers.append("chroma_node_id_digest_mismatch")
+        if historical_evidence.get("vector_digest") != vector_digest:
+            blockers.append("chroma_vector_digest_mismatch")
     receipt = StageAReceipt(
         status="certified" if not blockers else "blocked",
         row_count=len(rows),
         database_digest=database_digest,
-        row_digest=canonical_digest(
-            [{"node_id": row["node_id"], "source_metadata_digest": row["source_metadata_digest"]} for row in rows]
-        ),
-        document_digest=canonical_digest(
-            [{"node_id": row["node_id"], "sha256": row["document_sha256"]} for row in rows]
-        ),
-        payload_digest=canonical_digest(
-            [{"node_id": row["node_id"], "sha256": row["payload_identity_digest"]} for row in rows]
-        ),
-        vector_digest=canonical_digest(
-            [{"node_id": row["node_id"], "sha256": row["vector_sha256"]} for row in rows]
-        ),
+        node_id_digest=node_id_digest,
+        row_digest=row_digest,
+        document_digest=document_digest,
+        payload_digest=payload_digest,
+        vector_digest=vector_digest,
         embedding_family=EMBEDDING_FAMILY,
         embedding_model=EMBEDDING_MODEL,
         dimension=EMBEDDING_DIMENSION,
@@ -444,11 +484,16 @@ def build_stage_b_inventory(
         metadata = dict(asset.get("metadata") or {})
         if not document.strip():
             row_blockers.append("canonical_document_missing")
-        payload_hash = str(metadata.get("payload_hash") or "")
-        payload_hash_origin = "manifest_metadata"
-        if not SHA256_RE.fullmatch(payload_hash):
-            payload_hash = canonical_digest({"document": document, "metadata": metadata, "node_id": node_id})
-            payload_hash_origin = "derived_from_locked_manifest_asset"
+        raw_payload_hash = metadata.get("payload_hash")
+        if isinstance(raw_payload_hash, str) and SHA256_RE.fullmatch(raw_payload_hash):
+            payload_hash = raw_payload_hash
+            payload_hash_origin = "manifest_metadata_unverified"
+            payload_hash_state = "present_unverified"
+        else:
+            payload_hash = ""
+            payload_hash_origin = "missing_or_invalid"
+            payload_hash_state = "invalid_or_missing"
+            row_blockers.append("payload_hash_invalid")
         input_kind = "canonical_text"
         input_sha256 = hashlib.sha256(document.encode("utf-8")).hexdigest()
         immutable_source = "manifest_asset"
@@ -486,6 +531,7 @@ def build_stage_b_inventory(
                 "document_sha256": hashlib.sha256(document.encode("utf-8")).hexdigest(),
                 "payload_hash": payload_hash,
                 "payload_hash_origin": payload_hash_origin,
+                "payload_hash_state": payload_hash_state,
                 "metadata": metadata,
                 "payload_identity_digest": canonical_digest(
                     {"document": document, "metadata": metadata, "node_id": node_id}
@@ -493,13 +539,13 @@ def build_stage_b_inventory(
                 "embedding_family": EMBEDDING_FAMILY,
                 "embedding_model": EMBEDDING_MODEL,
                 "dimension": EMBEDDING_DIMENSION,
-                "qdrant_state": "already_present" if node_id in actual_set else "missing",
+                "qdrant_state": "present_unverified" if node_id in actual_set else "missing",
                 "adapter_state": "inventory_only_no_provider_calls",
                 "blockers": sorted(row_blockers),
             }
         )
     rows.sort(key=lambda item: item["node_id"])
-    status = "inventory_certified_embedding_pending" if not blockers else "blocked"
+    status = "inventory_unverified" if not blockers else "blocked"
     return (
         StageBInventory(
             status=status,
@@ -579,6 +625,12 @@ def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | No
     expected_point_ids = [dantedash_point_id(node_id) for node_id in manifest_ids]
     drift = classify_vector_drift(expected_point_ids, audit.actual_ids, conflict_ids=audit.conflict_ids)
     actual_point_ids = set(audit.actual_ids)
+    for row in stage_a_rows:
+        row["qdrant_state"] = (
+            "present_unverified"
+            if dantedash_point_id(row["node_id"]) in actual_point_ids
+            else "missing"
+        )
     actual_node_ids = [node_id for node_id in manifest_ids if dantedash_point_id(node_id) in actual_point_ids]
     stage_b, stage_b_rows = build_stage_b_inventory(
         assets,
@@ -586,7 +638,7 @@ def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | No
         actual_node_ids,
     )
     run_id = generate_run_id()
-    run_dir = create_private_run_dir(Path(args.output_root), run_id)
+    run_dir = create_private_run_dir(run_id)
     stage_a_path = run_dir / "stage-a-source-bundle.jsonl"
     stage_b_path = run_dir / "stage-b-source-matrix.jsonl"
     write_jsonl_once(stage_a_path, stage_a_rows)
@@ -623,6 +675,8 @@ def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | No
             "missing_count": len(drift.missing_ids),
             "stale_count": len(drift.stale_ids),
             "conflict_count": len(drift.conflict_ids),
+            "content_exactness": "unverified",
+            "zero_write_replay_claimed": False,
         },
         "stage_a": asdict(stage_a),
         "stage_b": asdict(stage_b),
@@ -686,10 +740,10 @@ def plan_recovery(args: argparse.Namespace, *, audit_raw: Mapping[str, Any] | No
     return public
 
 
-def create_private_run_dir(root: Path, run_id: str) -> Path:
+def create_private_run_dir(run_id: str) -> Path:
     if not RUN_ID_RE.fullmatch(run_id):
         raise RecoveryError("run_id_invalid")
-    root = root.expanduser()
+    root = DEFAULT_RECOVERY_ROOT.expanduser()
     if not root.is_absolute():
         raise RecoveryError("output_root_must_be_absolute")
     _reject_symlink_components(root)
@@ -819,7 +873,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chroma-collection", default=DEFAULT_COLLECTION)
     parser.add_argument("--collection", default="visual_memory__voyage_multimodal_3_5_1024")
     parser.add_argument("--knowledge-hub-base-url", default="http://127.0.0.1:8080")
-    parser.add_argument("--output-root", default=str(DEFAULT_RECOVERY_ROOT))
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
     parser.add_argument("--historical-commit", default=DEFAULT_EVIDENCE_COMMIT)
     parser.add_argument("--historical-snapshot", default=str(DEFAULT_EVIDENCE_SNAPSHOT))
